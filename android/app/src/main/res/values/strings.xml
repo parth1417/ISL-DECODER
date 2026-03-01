@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">ISL Recognition</string>
+    <string name="title_activity_main">ISL Recognition</string>
+    <string name="package_name">com.finelyer.islapp</string>
+    <string name="custom_url_scheme">com.finelyer.islapp</string>
+</resources>
