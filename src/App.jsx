@@ -8,9 +8,12 @@ import * as tf from '@tensorflow/tfjs';
 function App() {
   const [isCameraActive, setIsCameraActive] = useState(false);
   const [isVoiceEnabled, setIsVoiceEnabled] = useState(true);
-  const [isOffline, setIsOffline] = useState(false);
+
   const [confidence, setConfidence] = useState(0);
 
+  const [fullSentence, setFullSentence] = useState([]);
+  const [lastDetectedWord, setLastDetectedWord] = useState('');
+  const [stabilityCount, setStabilityCount] = useState(0);
   const [currentSentence, setCurrentSentence] = useState('');
   const [refinedGrammar, setRefinedGrammar] = useState('');
   const [isProcessing, setIsProcessing] = useState(false);
@@ -22,7 +25,8 @@ function App() {
   const customAiModelRef = useRef(null);
   const labelsRef = useRef([]);
   const requestRef = useRef(null);
-  let lastVideoTime = -1;
+  const lastVideoTimeRef = useRef(-1);
+  const stabilityThreshold = 15; // Number of frames to stay on the same word before adding it
 
   // Initialize Core Edge ML Models Unblocked
   useEffect(() => {
@@ -30,14 +34,41 @@ function App() {
       try {
         await tf.ready();
 
-        // Load the Py-trained model.json generated from the pipeline
+        // Reconstruct the model manually and load weights
         try {
-          customAiModelRef.current = await tf.loadLayersModel('/models/isl_model/model.json');
-          const res = await fetch('/models/isl_model/labels.json');
-          labelsRef.current = await res.json();
+          const resLabels = await fetch('/models/isl_model/labels.json');
+          labelsRef.current = await resLabels.json();
+
+          const resWeights = await fetch('/models/isl_model/weights.json');
+          const weightsData = await resWeights.json();
+
+          const NUM_CLASSES = labelsRef.current.length;
+          const NUM_COORD_POINTS = 126;
+
+          const model = tf.sequential();
+          model.add(tf.layers.dense({ units: 128, activation: 'relu', inputShape: [NUM_COORD_POINTS] }));
+          model.add(tf.layers.dropout({ rate: 0.2 }));
+          model.add(tf.layers.dense({ units: 64, activation: 'relu' }));
+          model.add(tf.layers.dense({ units: NUM_CLASSES, activation: 'softmax' }));
+
+          // Set weights
+          let weightIdx = 0;
+          model.layers.forEach(layer => {
+            if (layer.getWeights().length > 0) {
+              const layerWeights = weightsData[weightIdx];
+              layer.setWeights([
+                tf.tensor(layerWeights.weights),
+                tf.tensor(layerWeights.biases)
+              ]);
+              weightIdx++;
+            }
+          });
+
+          customAiModelRef.current = model;
           setModelLoaded(true);
+          console.log("Custom Neural Network loaded successfully via Weights Sync.");
         } catch (e) {
-          console.error("No custom model trained yet. Waiting for python pipeline to finish...", e);
+          console.error("AI Model Reconstruction Error:", e);
         }
 
         const vision = await FilesetResolver.forVisionTasks(
@@ -80,12 +111,12 @@ function App() {
     }
   };
 
-  const predictLoop = useCallback(async () => {
+  const predictLoop = useCallback(async function loop() {
     if (!videoRef.current || !canvasRef.current || !handLandmarkerRef.current || !customAiModelRef.current) return;
 
     const video = videoRef.current;
-    if (video.currentTime !== lastVideoTime) {
-      lastVideoTime = video.currentTime;
+    if (video.currentTime !== lastVideoTimeRef.current) {
+      lastVideoTimeRef.current = video.currentTime;
 
       const results = handLandmarkerRef.current.detectForVideo(video, performance.now());
 
@@ -123,26 +154,48 @@ function App() {
           const maxIdx = prediction.indexOf(Math.max(...prediction));
           const confidenceScore = prediction[maxIdx];
 
-          if (confidenceScore > 0.4) {
+          if (confidenceScore > 0.6) { // Increased threshold for stability
             const detectedLabel = labelsRef.current[maxIdx] || 'Recognizing...';
             setCurrentSentence(detectedLabel);
             setConfidence(Math.round(confidenceScore * 100));
-            setRefinedGrammar(`Recognized AI Sequence: "${detectedLabel}"`);
+
+            // Sentence building logic
+            if (detectedLabel === lastDetectedWord) {
+              setStabilityCount(prev => {
+                const newCount = prev + 1;
+                if (newCount === stabilityThreshold) {
+                  setFullSentence(prevSentence => {
+                    // Avoid adding the same word twice in a row immediately
+                    if (prevSentence.length > 0 && prevSentence[prevSentence.length - 1] === detectedLabel) {
+                      return prevSentence;
+                    }
+                    return [...prevSentence, detectedLabel];
+                  });
+                }
+                return newCount;
+              });
+            } else {
+              setLastDetectedWord(detectedLabel);
+              setStabilityCount(0);
+            }
+
+            setRefinedGrammar(`Recognized Word: "${detectedLabel}" (Stability: ${Math.round((stabilityCount / stabilityThreshold) * 100)}%)`);
           } else {
             setConfidence(0);
             setCurrentSentence('');
-            setRefinedGrammar('');
+            setStabilityCount(0);
           }
           tensor.dispose();
         } else {
           setIsProcessing(false);
           setConfidence(0);
+          setStabilityCount(0);
         }
       }
     }
 
     if (isCameraActive) {
-      requestRef.current = requestAnimationFrame(predictLoop);
+      requestRef.current = requestAnimationFrame(loop);
     }
   }, [isCameraActive]);
 
@@ -238,7 +291,7 @@ function App() {
         </div>
 
         <div className="live-text-container">
-          {!isCameraActive && !currentSentence ? (
+          {!isCameraActive && fullSentence.length === 0 ? (
             <div style={{ opacity: 0.3 }}>
               <div className="skeleton-text"></div>
               <div className="skeleton-text" style={{ width: '60%' }}></div>
@@ -247,17 +300,34 @@ function App() {
             <div className="live-text">
               {!modelLoaded ?
                 "Waiting for Custom Neural Network..." :
-                (currentSentence || 'Waiting for gestures...')}
+                (fullSentence.length > 0 ? fullSentence.join(' ') : (currentSentence || 'Waiting for gestures...'))}
               {isProcessing && <span className="cursor" />}
             </div>
           )}
         </div>
 
+        <div style={{ display: 'flex', gap: '10px', marginTop: '10px' }}>
+          <button
+            className="glass-panel"
+            style={{ padding: '8px 16px', cursor: 'pointer', border: 'none', color: 'white', backgroundColor: 'rgba(255,50,50,0.3)' }}
+            onClick={() => setFullSentence([])}
+          >
+            Clear Sentence
+          </button>
+          <button
+            className="glass-panel"
+            style={{ padding: '8px 16px', cursor: 'pointer', border: 'none', color: 'white', backgroundColor: 'rgba(50,255,100,0.2)' }}
+            onClick={() => setFullSentence(prev => [...prev, ' '])}
+          >
+            Add Space
+          </button>
+        </div>
+
         {refinedGrammar && (
-          <div className="grammar-correction fade-in">
+          <div className="grammar-correction fade-in" style={{ marginTop: '15px' }}>
             <CheckCircle2 size={16} className="grammar-icon" />
             <div className="grammar-text">
-              <strong>Context Detected: </strong>
+              <strong>Status: </strong>
               {refinedGrammar}
             </div>
           </div>
