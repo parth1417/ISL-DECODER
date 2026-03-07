@@ -4,7 +4,7 @@ import json
 import os
 
 def export_weights():
-    model_path = 'ml_pipeline/isl_model.h5'
+    model_path = 'isl_model.h5'
     if not os.path.exists(model_path):
         print("Model not found")
         return

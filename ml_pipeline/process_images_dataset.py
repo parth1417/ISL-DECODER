@@ -19,9 +19,14 @@ def process_images(max_images_per_class=100):
         print(f"Error: {RAW_VIDEOS_PATH} not found.", flush=True)
         return
 
-    actions = sorted([d for d in os.listdir(RAW_VIDEOS_PATH) if os.path.isdir(os.path.join(RAW_VIDEOS_PATH, d))])
+    all_items = os.listdir(RAW_VIDEOS_PATH)
+    actions = sorted([d for d in all_items if os.path.isdir(os.path.join(RAW_VIDEOS_PATH, d)) and len(d) <= 2])
     if len(actions) == 0:
-        print(f"No class directories found in {RAW_VIDEOS_PATH}/", flush=True)
+        # Fallback if classes have longer names
+        actions = sorted([d for d in all_items if os.path.isdir(os.path.join(RAW_VIDEOS_PATH, d)) and d not in ['isl_saved_model', 'raw_videos']])
+    
+    if len(actions) == 0:
+        print(f"No valid class directories found in {RAW_VIDEOS_PATH}/", flush=True)
         return
 
     features = []

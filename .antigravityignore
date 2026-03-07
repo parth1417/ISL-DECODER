@@ -1,0 +1,9 @@
+dataset/
+node_modules/
+build/
+dist/
+.git/
+.idea/
+*.npy
+*.h5
+*.task

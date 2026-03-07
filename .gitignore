@@ -39,3 +39,9 @@ android/.idea/
 
 # macOS
 .DS_Store
+
+# Heavy AI Assets
+ml_pipeline/raw_videos/
+*.npy
+*.h5
+*.task

@@ -54,9 +54,34 @@
   width: 8px;
   height: 8px;
   border-radius: 50%;
+}
+
+.status-indicator.active {
   background-color: var(--accent-primary);
   box-shadow: 0 0 10px var(--accent-primary);
   animation: pulse 2s infinite;
+}
+
+.status-indicator.initializing {
+  background-color: var(--warning);
+  box-shadow: 0 0 10px var(--warning);
+  animation: rotate 1s linear infinite;
+}
+
+.status-indicator.paused {
+  background-color: var(--danger);
+  box-shadow: 0 0 10px var(--danger);
+  animation: none;
+}
+
+@keyframes rotate {
+  from {
+    transform: scale(0.8) rotate(0deg);
+  }
+
+  to {
+    transform: scale(1.1) rotate(360deg);
+  }
 }
 
 .icon-btn {
@@ -80,6 +105,16 @@
 }
 
 .icon-btn.active {
+  color: var(--accent-primary);
+  border-color: rgba(0, 255, 136, 0.3);
+}
+
+.icon-btn.danger-hover:hover {
+  color: var(--danger);
+  border-color: rgba(255, 74, 74, 0.3);
+}
+
+.icon-btn.accent-hover:hover {
   color: var(--accent-primary);
   border-color: rgba(0, 255, 136, 0.3);
 }
@@ -149,6 +184,18 @@
   vertical-align: middle;
   margin-left: 4px;
   animation: pulse 1s infinite;
+}
+
+.error-glow {
+  color: var(--danger);
+  text-shadow: 0 0 10px rgba(255, 74, 74, 0.5);
+  font-size: 0.9rem;
+  font-weight: 500;
+  display: block;
+  padding: 10px;
+  background: rgba(255, 74, 74, 0.1);
+  border-radius: var(--radius-md);
+  border: 1px solid rgba(255, 74, 74, 0.2);
 }
 
 .grammar-correction {
