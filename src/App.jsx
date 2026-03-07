@@ -191,61 +191,70 @@ function App() {
         if (results.landmarks.length > 0) {
           setIsProcessing(true);
 
-          let lh = new Array(21 * 3).fill(0);
-          let rh = new Array(21 * 3).fill(0);
+          try {
+            let lh = new Array(21 * 3).fill(0);
+            let rh = new Array(21 * 3).fill(0);
 
-          if (results.landmarks[0]) {
-            if (results.handedness[0][0].categoryName === 'Left') {
-              lh = results.landmarks[0].flatMap(pt => [pt.x, pt.y, pt.z]);
-            } else {
-              rh = results.landmarks[0].flatMap(pt => [pt.x, pt.y, pt.z]);
+            // Modern MediaPipe uses 'handednesses', older uses 'handedness'
+            const handednessList = results.handednesses || results.handedness;
+
+            if (results.landmarks[0] && handednessList && handednessList[0]) {
+              const category = handednessList[0][0].categoryName;
+              if (category === 'Left') {
+                lh = results.landmarks[0].flatMap(pt => [pt.x, pt.y, pt.z]);
+              } else {
+                rh = results.landmarks[0].flatMap(pt => [pt.x, pt.y, pt.z]);
+              }
             }
-          }
-          if (results.landmarks[1]) {
-            if (results.handedness[1][0].categoryName === 'Left') {
-              lh = results.landmarks[1].flatMap(pt => [pt.x, pt.y, pt.z]);
-            } else {
-              rh = results.landmarks[1].flatMap(pt => [pt.x, pt.y, pt.z]);
+            if (results.landmarks[1] && handednessList && handednessList[1]) {
+              const category = handednessList[1][0].categoryName;
+              if (category === 'Left') {
+                lh = results.landmarks[1].flatMap(pt => [pt.x, pt.y, pt.z]);
+              } else {
+                rh = results.landmarks[1].flatMap(pt => [pt.x, pt.y, pt.z]);
+              }
             }
-          }
 
-          const tensor = tf.tensor2d([lh.concat(rh)]);
-          const prediction = await customAiModelRef.current.predict(tensor).data();
-          const maxIdx = prediction.indexOf(Math.max(...prediction));
-          const confidenceScore = prediction[maxIdx];
+            const tensor = tf.tensor2d([lh.concat(rh)]);
+            const prediction = await customAiModelRef.current.predict(tensor).data();
+            const maxIdx = prediction.indexOf(Math.max(...prediction));
+            const confidenceScore = prediction[maxIdx];
 
-          if (confidenceScore > 0.6) { // Increased threshold for stability
-            const detectedLabel = labelsRef.current[maxIdx] || 'Recognizing...';
-            setCurrentSentence(detectedLabel);
-            setConfidence(Math.round(confidenceScore * 100));
+            if (confidenceScore > 0.6) { // Increased threshold for stability
+              const detectedLabel = labelsRef.current[maxIdx] || 'Recognizing...';
+              setCurrentSentence(detectedLabel);
+              setConfidence(Math.round(confidenceScore * 100));
 
-            // Sentence building logic
-            if (detectedLabel === lastDetectedWord) {
-              setStabilityCount(prev => {
-                const newCount = prev + 1;
-                if (newCount === stabilityThreshold) {
-                  setFullSentence(prevSentence => {
-                    // Avoid adding the same word twice in a row immediately
-                    if (prevSentence.length > 0 && prevSentence[prevSentence.length - 1] === detectedLabel) {
-                      return prevSentence;
-                    }
-                    return [...prevSentence, detectedLabel];
-                  });
-                }
-                return newCount;
-              });
+              // Sentence building logic
+              if (detectedLabel === lastDetectedWord) {
+                setStabilityCount(prev => {
+                  const newCount = prev + 1;
+                  if (newCount === stabilityThreshold) {
+                    setFullSentence(prevSentence => {
+                      // Avoid adding the same word twice in a row immediately
+                      if (prevSentence.length > 0 && prevSentence[prevSentence.length - 1] === detectedLabel) {
+                        return prevSentence;
+                      }
+                      return [...prevSentence, detectedLabel];
+                    });
+                  }
+                  return newCount;
+                });
+              } else {
+                setLastDetectedWord(detectedLabel);
+                setStabilityCount(0);
+              }
+
+              setRefinedGrammar(`Recognized Word: "${detectedLabel}" (Stability: ${Math.round((stabilityCount / stabilityThreshold) * 100)}%)`);
             } else {
-              setLastDetectedWord(detectedLabel);
+              setConfidence(0);
+              setCurrentSentence('');
               setStabilityCount(0);
             }
-
-            setRefinedGrammar(`Recognized Word: "${detectedLabel}" (Stability: ${Math.round((stabilityCount / stabilityThreshold) * 100)}%)`);
-          } else {
-            setConfidence(0);
-            setCurrentSentence('');
-            setStabilityCount(0);
+            tensor.dispose();
+          } catch (predictionErr) {
+            console.error("Prediction loop error:", predictionErr);
           }
-          tensor.dispose();
         } else {
           setIsProcessing(false);
           setConfidence(0);
