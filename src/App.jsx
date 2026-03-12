@@ -1,25 +1,25 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
-import { Camera, CameraOff, Volume2, VolumeX, WifiOff, Sparkles, CheckCircle2 } from 'lucide-react';
+import { Camera, CameraOff, Volume2, VolumeX, WifiOff, Sparkles, Delete, Mic } from 'lucide-react';
 import './App.css';
 
 import { HandLandmarker, FilesetResolver } from '@mediapipe/tasks-vision';
 import * as tf from '@tensorflow/tfjs';
+
+// How many consecutive frames the SAME letter must be detected before it "locks in"
+const STABILITY_THRESHOLD = 30; // ~1 second at 30fps
 
 function App() {
   const [isCameraActive, setIsCameraActive] = useState(false);
   const [isVoiceEnabled, setIsVoiceEnabled] = useState(true);
 
   const [confidence, setConfidence] = useState(0);
-
-  const [fullSentence, setFullSentence] = useState([]);
-  const [lastDetectedWord, setLastDetectedWord] = useState('');
-  const [stabilityCount, setStabilityCount] = useState(0);
-  const [currentSentence, setCurrentSentence] = useState('');
-  const [refinedGrammar, setRefinedGrammar] = useState('');
-  const [isProcessing, setIsProcessing] = useState(false);
+  const [currentLetter, setCurrentLetter] = useState('');    // Live detected letter this frame
+  const [stabilityProgress, setStabilityProgress] = useState(0); // 0–100% progress to lock-in
+  const [builtSentence, setBuiltSentence] = useState('');    // The accumulated sentence string
   const [modelLoaded, setModelLoaded] = useState(false);
-  const [appStatus, setAppStatus] = useState('idle'); // idle, camera, mediapipe, neural_network, ready, error
+  const [appStatus, setAppStatus] = useState('idle');
   const [errorMessage, setErrorMessage] = useState('');
+  const [isHandVisible, setIsHandVisible] = useState(false);
 
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
@@ -28,17 +28,35 @@ function App() {
   const labelsRef = useRef([]);
   const requestRef = useRef(null);
   const lastVideoTimeRef = useRef(-1);
-  const stabilityThreshold = 15; // Number of frames to stay on the same word before adding it
 
-  // Sequential Core Initialization
-  // Step 1: Initialize Camera
+  // Refs for prediction loop (avoid stale closure issues)
+  const stabilityCountRef = useRef(0);
+  const lastDetectedLetterRef = useRef('');
+  const builtSentenceRef = useRef('');
+
+  // Keep builtSentenceRef in sync with state
+  useEffect(() => { builtSentenceRef.current = builtSentence; }, [builtSentence]);
+
+  // ─── TTS helper ────────────────────────────────────────────────────────────
+  const speak = useCallback((text) => {
+    if (!isVoiceEnabled || !text.trim()) return;
+    window.speechSynthesis.cancel();
+    const u = new SpeechSynthesisUtterance(text.trim());
+    u.rate = 0.9;
+    window.speechSynthesis.speak(u);
+  }, [isVoiceEnabled]);
+
+  // ─── Camera & AI Init ──────────────────────────────────────────────────────
   const toggleCamera = async () => {
     if (isCameraActive) {
       const stream = videoRef.current?.srcObject;
-      stream?.getTracks().forEach(track => track.stop());
+      stream?.getTracks().forEach(t => t.stop());
       videoRef.current.srcObject = null;
       setIsCameraActive(false);
       setAppStatus('idle');
+      setCurrentLetter('');
+      setStabilityProgress(0);
+      setIsHandVisible(false);
     } else {
       setAppStatus('camera');
       setErrorMessage('');
@@ -51,7 +69,7 @@ function App() {
         };
       } catch (err) {
         setAppStatus('error');
-        setErrorMessage("Camera access denied or failed: " + err.message);
+        setErrorMessage('Camera access denied: ' + err.message);
       }
     }
   };
@@ -60,42 +78,35 @@ function App() {
     try {
       setAppStatus('mediapipe');
       await tf.ready();
-
-      // Load MediaPipe first (Faster than custom weights usually)
       const vision = await FilesetResolver.forVisionTasks(
-        "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm"
+        'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm'
       );
       handLandmarkerRef.current = await HandLandmarker.createFromOptions(vision, {
         baseOptions: {
-          modelAssetPath: `https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task`,
-          delegate: "GPU"
+          modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task',
+          delegate: 'GPU',
         },
-        runningMode: "VIDEO",
+        runningMode: 'VIDEO',
         numHands: 2,
       });
-
-      // Load Custom Model (Step 3)
       setAppStatus('neural_network');
       await loadCustomModel();
-
       setAppStatus('ready');
-      console.log("All AI systems ready.");
     } catch (err) {
       setAppStatus('error');
-      setErrorMessage("System initialization failed: " + err.message);
+      setErrorMessage('System init failed: ' + err.message);
     }
   };
 
   const loadCustomModel = async () => {
     try {
-      // Robust loading of labels and weights
-      const resLabels = await fetch('/models/isl_model/labels.json').catch(e => { throw new Error("Labels missing") });
+      const resLabels = await fetch('/models/isl_model/labels.json');
       labelsRef.current = await resLabels.json();
 
-      const resWeights = await fetch('/models/isl_model/weights.json').catch(e => { throw new Error("Weights missing") });
+      const resWeights = await fetch('/models/isl_model/weights.json');
       const weightsData = await resWeights.json();
 
-      const NUM_CLASSES = labelsRef.current.length || 34; // Fallback
+      const NUM_CLASSES = labelsRef.current.length || 34;
       const NUM_COORD_POINTS = 126;
 
       const model = tf.sequential();
@@ -104,26 +115,19 @@ function App() {
       model.add(tf.layers.dense({ units: 64, activation: 'relu' }));
       model.add(tf.layers.dense({ units: NUM_CLASSES, activation: 'softmax' }));
 
-      // Shape validation layer by layer
       let weightIdx = 0;
       model.layers.forEach((layer, idx) => {
         if (layer.getWeights().length > 0) {
-          const layerWeights = weightsData[weightIdx];
-          if (!layerWeights) {
-            console.warn(`Layer ${idx} No weights found in JSON at index ${weightIdx}`);
-            return;
-          }
-
+          const lw = weightsData[weightIdx];
+          if (!lw) return;
           const expectedShape = layer.getWeights()[0].shape;
-          const actualShape = [layerWeights.weights.length, layerWeights.weights[0].length];
-
+          const actualShape = [lw.weights.length, lw.weights[0].length];
           if (expectedShape[0] !== actualShape[0] || expectedShape[1] !== actualShape[1]) {
-            throw new Error(`Shape mismatch in Layer ${idx}: Expected ${expectedShape}, got ${actualShape}. Make sure exported weights match current Labels count (${NUM_CLASSES}).`);
+            throw new Error(`Shape mismatch in Layer ${idx}: Expected ${expectedShape}, got ${actualShape}.`);
           }
-
           layer.setWeights([
-            tf.tensor(layerWeights.weights, expectedShape),
-            tf.tensor(layerWeights.biases, [layerWeights.biases.length])
+            tf.tensor(lw.weights, expectedShape),
+            tf.tensor(lw.biases, [lw.biases.length]),
           ]);
           weightIdx++;
         }
@@ -131,37 +135,31 @@ function App() {
 
       customAiModelRef.current = model;
       setModelLoaded(true);
-      console.log("Custom Neural Network loaded successfully.");
     } catch (e) {
-      console.log("Custom Model loading failed, using fallback:", e);
-      // fallback to random or null model
       customAiModelRef.current = {
-        predict: (t) => ({ data: async () => new Float32Array(labelsRef.current.length || 34).fill(0.01) })
+        predict: (t) => ({ data: async () => new Float32Array(labelsRef.current.length || 34).fill(0.01) }),
       };
-      setModelLoaded(true); // Treat as loaded but "Simulation" mode
-      setErrorMessage("Using Simulation Mode: Neural network architecture mismatch. " + e.message);
+      setModelLoaded(true);
+      setErrorMessage('Simulation Mode: ' + e.message);
     }
   };
 
-  // Skip auto-load on mount (per task 7)
-  // Instead, just ready TensorFlow for snappiness
   useEffect(() => {
-    tf.ready().then(() => console.log("TF.js ready for quick start."));
+    tf.ready().then(() => console.log('TF.js ready.'));
   }, []);
 
+  // ─── Landmark Drawing ──────────────────────────────────────────────────────
   const drawLandmarks = (ctx, landmarks) => {
     ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
-    ctx.fillStyle = "#00ff88";
-    ctx.strokeStyle = "#00b8ff";
+    ctx.fillStyle = '#00ff88';
+    ctx.strokeStyle = '#00b8ff';
     ctx.lineWidth = 2;
-    // draw points and connections
     for (const hand of landmarks) {
       for (const point of hand) {
         ctx.beginPath();
         ctx.arc(point.x * ctx.canvas.width, point.y * ctx.canvas.height, 4, 0, 2 * Math.PI);
         ctx.fill();
       }
-      // Simple wireframe logic
       ctx.beginPath();
       ctx.moveTo(hand[0].x * ctx.canvas.width, hand[0].y * ctx.canvas.height);
       for (let i = 1; i < hand.length; i++) {
@@ -171,6 +169,7 @@ function App() {
     }
   };
 
+  // ─── Prediction Loop ───────────────────────────────────────────────────────
   const predictLoop = useCallback(async function loop() {
     if (!videoRef.current || !canvasRef.current || !handLandmarkerRef.current || !customAiModelRef.current) return;
 
@@ -179,87 +178,74 @@ function App() {
       lastVideoTimeRef.current = video.currentTime;
 
       const results = handLandmarkerRef.current.detectForVideo(video, performance.now());
-
       const ctx = canvasRef.current.getContext('2d');
-      // match video sizing
       canvasRef.current.width = video.videoWidth;
       canvasRef.current.height = video.videoHeight;
 
-      if (results.landmarks) {
+      if (results.landmarks && results.landmarks.length > 0) {
         drawLandmarks(ctx, results.landmarks);
+        setIsHandVisible(true);
 
-        if (results.landmarks.length > 0) {
-          setIsProcessing(true);
+        try {
+          let lh = new Array(21 * 3).fill(0);
+          let rh = new Array(21 * 3).fill(0);
+          const handednessList = results.handednesses || results.handedness;
 
-          try {
-            let lh = new Array(21 * 3).fill(0);
-            let rh = new Array(21 * 3).fill(0);
-
-            // Modern MediaPipe uses 'handednesses', older uses 'handedness'
-            const handednessList = results.handednesses || results.handedness;
-
-            if (results.landmarks[0] && handednessList && handednessList[0]) {
-              const category = handednessList[0][0].categoryName;
-              if (category === 'Left') {
-                lh = results.landmarks[0].flatMap(pt => [pt.x, pt.y, pt.z]);
-              } else {
-                rh = results.landmarks[0].flatMap(pt => [pt.x, pt.y, pt.z]);
-              }
-            }
-            if (results.landmarks[1] && handednessList && handednessList[1]) {
-              const category = handednessList[1][0].categoryName;
-              if (category === 'Left') {
-                lh = results.landmarks[1].flatMap(pt => [pt.x, pt.y, pt.z]);
-              } else {
-                rh = results.landmarks[1].flatMap(pt => [pt.x, pt.y, pt.z]);
-              }
-            }
-
-            const tensor = tf.tensor2d([lh.concat(rh)]);
-            const prediction = await customAiModelRef.current.predict(tensor).data();
-            const maxIdx = prediction.indexOf(Math.max(...prediction));
-            const confidenceScore = prediction[maxIdx];
-
-            if (confidenceScore > 0.6) { // Increased threshold for stability
-              const detectedLabel = labelsRef.current[maxIdx] || 'Recognizing...';
-              setCurrentSentence(detectedLabel);
-              setConfidence(Math.round(confidenceScore * 100));
-
-              // Sentence building logic
-              if (detectedLabel === lastDetectedWord) {
-                setStabilityCount(prev => {
-                  const newCount = prev + 1;
-                  if (newCount === stabilityThreshold) {
-                    setFullSentence(prevSentence => {
-                      // Avoid adding the same word twice in a row immediately
-                      if (prevSentence.length > 0 && prevSentence[prevSentence.length - 1] === detectedLabel) {
-                        return prevSentence;
-                      }
-                      return [...prevSentence, detectedLabel];
-                    });
-                  }
-                  return newCount;
-                });
-              } else {
-                setLastDetectedWord(detectedLabel);
-                setStabilityCount(0);
-              }
-
-              setRefinedGrammar(`Recognized Word: "${detectedLabel}" (Stability: ${Math.round((stabilityCount / stabilityThreshold) * 100)}%)`);
-            } else {
-              setConfidence(0);
-              setCurrentSentence('');
-              setStabilityCount(0);
-            }
-            tensor.dispose();
-          } catch (predictionErr) {
-            console.error("Prediction loop error:", predictionErr);
+          if (results.landmarks[0] && handednessList?.[0]) {
+            const cat = handednessList[0][0].categoryName;
+            if (cat === 'Left') lh = results.landmarks[0].flatMap(pt => [pt.x, pt.y, pt.z]);
+            else rh = results.landmarks[0].flatMap(pt => [pt.x, pt.y, pt.z]);
           }
-        } else {
-          setIsProcessing(false);
-          setConfidence(0);
-          setStabilityCount(0);
+          if (results.landmarks[1] && handednessList?.[1]) {
+            const cat = handednessList[1][0].categoryName;
+            if (cat === 'Left') lh = results.landmarks[1].flatMap(pt => [pt.x, pt.y, pt.z]);
+            else rh = results.landmarks[1].flatMap(pt => [pt.x, pt.y, pt.z]);
+          }
+
+          const tensor = tf.tensor2d([lh.concat(rh)]);
+          const prediction = await customAiModelRef.current.predict(tensor).data();
+          const maxIdx = prediction.indexOf(Math.max(...prediction));
+          const confidenceScore = prediction[maxIdx];
+          tensor.dispose();
+
+          if (confidenceScore > 0.6) {
+            const detected = labelsRef.current[maxIdx] || '?';
+            setCurrentLetter(detected);
+            setConfidence(Math.round(confidenceScore * 100));
+
+            // Stability check — same letter for STABILITY_THRESHOLD frames → lock it in
+            if (detected === lastDetectedLetterRef.current) {
+              stabilityCountRef.current += 1;
+              const progress = Math.min(100, Math.round((stabilityCountRef.current / STABILITY_THRESHOLD) * 100));
+              setStabilityProgress(progress);
+
+              if (stabilityCountRef.current === STABILITY_THRESHOLD) {
+                // Lock this letter into the sentence
+                setBuiltSentence(prev => prev + detected);
+                builtSentenceRef.current = builtSentenceRef.current + detected;
+                stabilityCountRef.current = 0; // reset so next hold adds another
+              }
+            } else {
+              lastDetectedLetterRef.current = detected;
+              stabilityCountRef.current = 0;
+              setStabilityProgress(0);
+            }
+          } else {
+            setCurrentLetter('');
+            setConfidence(0);
+            setStabilityProgress(0);
+            stabilityCountRef.current = 0;
+          }
+        } catch (err) {
+          console.error('Prediction error:', err);
         }
+      } else {
+        ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
+        setIsHandVisible(false);
+        setCurrentLetter('');
+        setConfidence(0);
+        setStabilityProgress(0);
+        stabilityCountRef.current = 0;
       }
     }
 
@@ -279,16 +265,39 @@ function App() {
     return () => cancelAnimationFrame(requestRef.current);
   }, [isCameraActive, predictLoop]);
 
-  // Original toggleCamera removed as it was replaced in initialization block
+  // ─── Sentence Actions ──────────────────────────────────────────────────────
+  const addSpace = () => {
+    const word = builtSentence.split(' ').pop(); // last word
+    if (word) speak(word);
+    setBuiltSentence(prev => prev + ' ');
+  };
 
+  const backspace = () => {
+    setBuiltSentence(prev => prev.slice(0, -1));
+  };
+
+  const clearSentence = () => {
+    setBuiltSentence('');
+    builtSentenceRef.current = '';
+  };
+
+  const speakSentence = () => speak(builtSentence);
+
+  // ─── UI ────────────────────────────────────────────────────────────────────
   return (
     <div className="app-container">
-      {/* Top Camera View Section */}
+      {/* Camera Section */}
       <div className="camera-wrapper">
         <div className="top-bar">
           <div className="glass-panel status-pill">
-            <div className={`status-indicator ${appStatus === 'ready' ? 'active' : (appStatus === 'error' ? 'paused' : 'initializing')}`}
-              style={{ backgroundColor: appStatus === 'ready' ? 'var(--accent-primary)' : (appStatus === 'error' ? 'var(--danger)' : 'var(--warning)') }}></div>
+            <div
+              className={`status-indicator ${appStatus === 'ready' ? 'active' : appStatus === 'error' ? 'paused' : 'initializing'}`}
+              style={{
+                backgroundColor:
+                  appStatus === 'ready' ? 'var(--accent-primary)' :
+                    appStatus === 'error' ? 'var(--danger)' : 'var(--warning)',
+              }}
+            />
             <span className="gradient-text" style={{ fontVariantCaps: 'all-small-caps' }}>
               {appStatus === 'idle' && 'SYSTEM READY'}
               {appStatus === 'camera' && 'INITIALIZING CAMERA...'}
@@ -298,7 +307,6 @@ function App() {
               {appStatus === 'error' && 'SYSTEM FAILURE'}
             </span>
           </div>
-
           <div style={{ display: 'flex', gap: '8px' }}>
             {appStatus === 'error' && (
               <button className="icon-btn" onClick={() => window.location.reload()} title="Force Reload">
@@ -314,19 +322,31 @@ function App() {
           </div>
         </div>
 
-        <video
-          ref={videoRef}
-          autoPlay
-          playsInline
-          muted
-          className="camera-feed"
-          style={{ display: isCameraActive ? 'block' : 'none' }}
-        />
-        <canvas
-          ref={canvasRef}
-          className="tracking-canvas"
-          style={{ display: isCameraActive ? 'block' : 'none' }}
-        />
+        <video ref={videoRef} autoPlay playsInline muted className="camera-feed" style={{ display: isCameraActive ? 'block' : 'none' }} />
+        <canvas ref={canvasRef} className="tracking-canvas" style={{ display: isCameraActive ? 'block' : 'none' }} />
+
+        {/* Live Letter HUD — shown while camera is active */}
+        {isCameraActive && (
+          <div className="live-letter-hud">
+            <div className="live-letter-display">
+              {currentLetter || (isHandVisible ? '?' : '✋')}
+            </div>
+            <div className="stability-bar-wrapper">
+              <div
+                className="stability-bar-fill"
+                style={{ width: `${stabilityProgress}%`, backgroundColor: stabilityProgress === 100 ? 'var(--accent-primary)' : 'var(--warning)' }}
+              />
+            </div>
+            <div className="live-letter-label">
+              {currentLetter
+                ? `Detecting: "${currentLetter}" — hold still to add  (${stabilityProgress}%)`
+                : isHandVisible ? 'Low confidence...' : 'Show your hand'}
+            </div>
+            {confidence > 0 && (
+              <div className="confidence-chip">{confidence}% confident</div>
+            )}
+          </div>
+        )}
 
         {!isCameraActive && (
           <div style={{ height: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', color: 'var(--text-secondary)' }}>
@@ -336,63 +356,56 @@ function App() {
         )}
       </div>
 
-      {/* Bottom Output Panel */}
+      {/* Output Panel */}
       <div className="output-panel">
         <div className="panel-header">
           <h2 style={{ fontSize: '1.2rem', display: 'flex', alignItems: 'center', gap: '8px' }}>
             <Sparkles size={18} className="gradient-text" />
-            Live Translation
+            Sentence Builder
           </h2>
-          <div className="confidence-bar">
-            <span>Accuracy</span>
-            <div className="confidence-fill">
-              <div className="confidence-level" style={{ width: `${confidence}%` }}></div>
-            </div>
-          </div>
         </div>
 
-        <div className="live-text-container">
-          {!isCameraActive && fullSentence.length === 0 ? (
-            <div style={{ opacity: 0.3 }}>
-              <div className="skeleton-text"></div>
-              <div className="skeleton-text" style={{ width: '60%' }}></div>
-            </div>
+        {/* How-to hint */}
+        <div className="hint-strip">
+          ✋ Hold a sign steady for ~1 sec to add a letter &nbsp;·&nbsp; Use <strong>Space</strong> to separate words &nbsp;·&nbsp; <strong>Backspace</strong> to fix mistakes
+        </div>
+
+        {/* Sentence display */}
+        <div className="sentence-display">
+          {appStatus === 'error' ? (
+            <span className="error-glow">{errorMessage}</span>
+          ) : builtSentence ? (
+            <>
+              <span className="sentence-text">{builtSentence}</span>
+              <span className="cursor" />
+            </>
           ) : (
-            <div className="live-text">
-              {appStatus === 'error' ?
-                <span className="error-glow">{errorMessage}</span> :
-                (!modelLoaded ?
-                  "Waiting for initiation..." :
-                  (fullSentence.length > 0 ? fullSentence.join(' ') : (currentSentence || 'Ready for gestures...')))}
-              {isProcessing && <span className="cursor" />}
-            </div>
+            <span style={{ opacity: 0.3, fontStyle: 'italic' }}>
+              {modelLoaded ? 'Start signing to build a sentence...' : 'Waiting for model...'}
+            </span>
           )}
         </div>
 
-        <div style={{ display: 'flex', gap: '10px', marginTop: '10px' }}>
-          <button
-            className="glass-panel"
-            style={{ padding: '8px 16px', cursor: 'pointer', border: 'none', color: 'white', backgroundColor: 'rgba(255,50,50,0.3)' }}
-            onClick={() => setFullSentence([])}
-          >
-            Clear Sentence
+        {/* Action buttons */}
+        <div className="action-buttons">
+          <button className="action-btn space-btn" onClick={addSpace} title="Add space between words">
+            ␣ Space
           </button>
-          <button
-            className="glass-panel"
-            style={{ padding: '8px 16px', cursor: 'pointer', border: 'none', color: 'white', backgroundColor: 'rgba(50,255,100,0.2)' }}
-            onClick={() => setFullSentence(prev => [...prev, ' '])}
-          >
-            Add Space
+          <button className="action-btn backspace-btn" onClick={backspace} title="Delete last character">
+            <Delete size={16} /> Backspace
+          </button>
+          <button className="action-btn speak-btn" onClick={speakSentence} title="Read sentence aloud" disabled={!builtSentence.trim()}>
+            <Mic size={16} /> Speak
+          </button>
+          <button className="action-btn clear-btn" onClick={clearSentence} title="Clear the sentence">
+            ✕ Clear
           </button>
         </div>
 
-        {refinedGrammar && (
-          <div className="grammar-correction fade-in" style={{ marginTop: '15px' }}>
-            <CheckCircle2 size={16} className="grammar-icon" />
-            <div className="grammar-text">
-              <strong>Status: </strong>
-              {refinedGrammar}
-            </div>
+        {/* Error hint */}
+        {errorMessage && appStatus !== 'error' && (
+          <div className="grammar-correction fade-in" style={{ marginTop: '10px' }}>
+            <span style={{ opacity: 0.6, fontSize: '0.8rem' }}>⚠ {errorMessage}</span>
           </div>
         )}
       </div>
