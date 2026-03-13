@@ -48,10 +48,13 @@ function App() {
 
   // ─── Camera & AI Init ──────────────────────────────────────────────────────
   const toggleCamera = async () => {
+    console.log("Toggle Camera: ", !isCameraActive);
     if (isCameraActive) {
       const stream = videoRef.current?.srcObject;
-      stream?.getTracks().forEach(t => t.stop());
-      videoRef.current.srcObject = null;
+      if (stream) {
+        stream.getTracks().forEach(t => t.stop());
+      }
+      if (videoRef.current) videoRef.current.srcObject = null;
       setIsCameraActive(false);
       setAppStatus('idle');
       setCurrentLetter('');
@@ -61,6 +64,7 @@ function App() {
       setAppStatus('camera');
       setErrorMessage('');
       try {
+        console.log("Requesting camera access...");
         const stream = await navigator.mediaDevices.getUserMedia({ 
             video: { 
                 facingMode: 'user', 
@@ -68,19 +72,29 @@ function App() {
                 height: { ideal: 480 } 
             } 
         });
-        videoRef.current.srcObject = stream;
-        setIsCameraActive(true); // Show camera feed immediately
-        videoRef.current.onloadedmetadata = async () => {
-          try {
-            await videoRef.current.play();
-            await loadAIModules();
-          } catch (playErr) {
-            console.error("Video play failed:", playErr);
-          }
-        };
+        
+        if (videoRef.current) {
+          videoRef.current.onloadedmetadata = async () => {
+             console.log("Video metadata loaded");
+             try {
+               await videoRef.current.play();
+               console.log("Video playing");
+               await loadAIModules();
+             } catch (playErr) {
+               console.error("Play error:", playErr);
+               // Even if play fails (e.g. autonomy block), try to continue
+               await loadAIModules();
+             }
+          };
+          
+          videoRef.current.srcObject = stream;
+          setIsCameraActive(true);
+        }
       } catch (err) {
+        console.error("Camera Access Error:", err);
         setAppStatus('error');
-        setErrorMessage('Camera access denied: ' + err.message);
+        const msg = err.name === 'NotAllowedError' ? 'Permission Denied. Please allow camera in settings.' : err.message;
+        setErrorMessage(`Camera Error: ${msg}`);
       }
     }
   };
