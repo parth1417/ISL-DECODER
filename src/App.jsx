@@ -104,20 +104,21 @@ function App() {
   const loadAIModules = async () => {
     if (handLandmarkerRef.current) return;
     try {
-      addLog("Booting AI Engine (v1.5)...");
+      addLog("Booting AI Engine (v1.6)...");
       setAppStatus('mediapipe');
       await tf.ready();
       
-      addLog("Loading MediaPipe Runtime...");
+      addLog("Loading Hand Tracking Engine...");
       // Using 0.10.14 as it is highly stable via CDN
       const vision = await FilesetResolver.forVisionTasks(
         'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm'
       );
       
-      addLog("Configuring Hand Tracker...");
+      addLog("Fetching Model from Google Cloud...");
+      // Using verified float16 path to avoid 404 errors
       handLandmarkerRef.current = await HandLandmarker.createFromOptions(vision, {
         baseOptions: {
-          modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/lite/1/hand_landmarker.task',
+          modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task',
         },
         runningMode: 'VIDEO',
         numHands: 2,
@@ -130,15 +131,23 @@ function App() {
       
       setAppStatus('ready');
       setErrorMessage('');
-      addLog("SYSTEM ONLINE.");
+      addLog("AI ONLINE.");
     } catch (err) {
       const detail = `${err.name}: ${err.message}`;
       console.error(err);
       addLog(`FATAL: ${detail}`);
       setAppStatus('error');
       setErrorMessage(detail);
-      // Popup alert for immediate mobile debugging
-      alert(`DIAGNOSTIC v1.5: ${detail}`);
+      
+      // Critical: Clear camera if engine fails so user can retry cleanly
+      if (videoRef.current) {
+         const tracks = videoRef.current.srcObject?.getTracks();
+         tracks?.forEach(t => t.stop());
+         videoRef.current.srcObject = null;
+      }
+      setIsCameraActive(false);
+      
+      alert(`DIAGNOSTIC v1.6: ${detail}`);
     }
   };
 
@@ -466,7 +475,7 @@ function App() {
           </h2>
           {debugLogs.length > 0 && (
             <div style={{ fontSize: '0.6rem', color: 'var(--accent-primary)', opacity: 0.8 }}>
-              v1.5 - {debugLogs[0]}
+              v1.6 - {debugLogs[0]}
             </div>
           )}
         </div>
