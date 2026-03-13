@@ -20,6 +20,12 @@ function App() {
   const [appStatus, setAppStatus] = useState('idle');
   const [errorMessage, setErrorMessage] = useState('');
   const [isHandVisible, setIsHandVisible] = useState(false);
+  const [debugLogs, setDebugLogs] = useState([]);
+
+  const addLog = (msg) => {
+    console.log(`[AI-LOG] ${msg}`);
+    setDebugLogs(prev => [`${new Date().toLocaleTimeString([], { hour12: false })}: ${msg}`, ...prev].slice(0, 8));
+  };
 
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
@@ -102,13 +108,17 @@ function App() {
   const loadAIModules = async () => {
     if (handLandmarkerRef.current) return;
     try {
-      console.log("AI Init Start");
+      addLog("Starting AI Engine...");
       setAppStatus('mediapipe');
+      
+      addLog("Initializing TF.js Core...");
       await tf.ready();
+      addLog(`TF.js Backend: ${tf.getBackend()}`);
       
       const CDN_URLS = [
         'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.32/wasm',
-        'https://unpkg.com/@mediapipe/tasks-vision@0.10.32/wasm'
+        'https://unpkg.com/@mediapipe/tasks-vision@0.10.32/wasm',
+        '/wasm' // Local fallback if user hosted it
       ];
       
       let vision = null;
@@ -116,82 +126,74 @@ function App() {
       
       for (const url of CDN_URLS) {
         try {
-          console.log(`AI Init: Trying CDN ${url}`);
+          addLog(`Fetching MediaPipe Runtime from ${url}...`);
           vision = await FilesetResolver.forVisionTasks(url);
-          if (vision) break;
+          if (vision) {
+            addLog("MediaPipe Fileset loaded successfully.");
+            break;
+          }
         } catch (e) {
-          console.warn(`CDN ${url} failed:`, e);
+          addLog(`CDN Error: ${e.message}`);
           lastErr = e;
         }
       }
       
-      if (!vision) throw lastErr || new Error("All CDNs failed to load MediaPipe tasks.");
+      if (!vision) throw lastErr || new Error("Failed to resolve MediaPipe fileset.");
       
-      console.log("AI Init: Creating HandLandmarker...");
+      addLog("Initializing Hand Tracker (Lite)...");
       handLandmarkerRef.current = await HandLandmarker.createFromOptions(vision, {
         baseOptions: {
           modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/lite/1/hand_landmarker.task',
+          delegate: 'GPU'
         },
         runningMode: 'VIDEO',
         numHands: 2,
         minHandDetectionConfidence: 0.3,
-        minHandPresenceConfidence: 0.3,
       });
+      addLog("Hand Tracker Ready.");
       
-      console.log("AI Init: Loading Custom Neural Network...");
+      addLog("Loading ISL Classifier...");
       setAppStatus('neural_network');
       await loadCustomModel();
       
       setAppStatus('ready');
       setErrorMessage('');
-      console.log("AI Init: SUCCESS");
+      addLog("SYSTEM ONLINE.");
     } catch (err) {
-      console.error("AI Init: CRITICAL FAILURE", err);
+      const errorDetail = `${err.name}: ${err.message}`;
+      addLog(`CRITICAL FAILURE: ${errorDetail}`);
       setAppStatus('error');
-      let msg = err.message;
-      if (msg.includes('fetch') || msg.includes('Script error')) {
-        msg = "Network Error. Please disable AdBlock or VPN.";
-      }
-      setErrorMessage(`${err.name}: ${msg}`);
-      // Show an alert on failure to help diagnostic
-      alert(`DIAGNOSTIC: ${err.name} - ${msg}`);
+      setErrorMessage(errorDetail);
     }
   };
 
   const loadCustomModel = async () => {
     try {
-      console.log("Model: Fetching definitions...");
+      addLog("Loading Model Assets...");
       const resLabels = await fetch('/models/isl_model/labels.json');
-      if (!resLabels.ok) throw new Error(`Labels 404`);
+      if (!resLabels.ok) throw new Error(`Labels Fetch 404`);
       labelsRef.current = await resLabels.json();
 
       const resWeights = await fetch('/models/isl_model/weights.json');
-      if (!resWeights.ok) throw new Error(`Weights 404`);
+      if (!resWeights.ok) throw new Error(`Weights Fetch 404`);
       const weightsData = await resWeights.json();
 
-      if (!Array.isArray(labelsRef.current) || labelsRef.current.length === 0) {
-        throw new Error("Invalid labels array");
-      }
-
-      const NUM_CLASSES = labelsRef.current.length;
-      console.log(`Model: Building for ${NUM_CLASSES} signs...`);
+      const numLabels = labelsRef.current.length;
+      addLog(`Syncing ${numLabels} classes...`);
       
       const model = tf.sequential();
       model.add(tf.layers.dense({ units: 128, activation: 'relu', inputShape: [126] }));
       model.add(tf.layers.dropout({ rate: 0.2 }));
       model.add(tf.layers.dense({ units: 64, activation: 'relu' }));
-      model.add(tf.layers.dense({ units: NUM_CLASSES, activation: 'softmax' }));
+      model.add(tf.layers.dense({ units: numLabels, activation: 'softmax' }));
 
-      // Map weights manually
       let weightIdx = 0;
       for (let layer of model.layers) {
         if (layer.getWeights().length > 0) {
           const lw = weightsData[weightIdx];
           if (!lw) continue;
-          
-          const expectedShape = layer.getWeights()[0].shape;
           layer.setWeights([
-            tf.tensor(lw.weights, expectedShape),
+            tf.tensor(lw.weights, layer.getWeights()[0].shape),
             tf.tensor(lw.biases, [lw.biases.length]),
           ]);
           weightIdx++;
@@ -200,15 +202,14 @@ function App() {
 
       customAiModelRef.current = model;
       setModelLoaded(true);
-      console.log("Model: SUCCESS.");
+      addLog("ISL Classifier: Ready.");
     } catch (e) {
-      console.error("Model Error:", e.message);
-      // Failsafe: Basic Prediction Mock to allow UI interaction
+      addLog(`Classifier Error: ${e.message}`);
       customAiModelRef.current = {
         predict: (t) => ({ data: async () => new Float32Array(labelsRef.current?.length || 34).fill(0.0) }),
       };
       setModelLoaded(true);
-      setErrorMessage(`Model failed (${e.message}). Recognition disabled.`);
+      setErrorMessage(`Model: ${e.message}`);
     }
   };
 
@@ -472,12 +473,27 @@ function App() {
 
       {/* Output Panel */}
       <div className="output-panel">
-        <div className="panel-header">
+        <div className="panel-header" style={{ marginBottom: '8px' }}>
           <h2 style={{ fontSize: '1.2rem', display: 'flex', alignItems: 'center', gap: '8px' }}>
             <Sparkles size={18} className="gradient-text" />
             Sentence Builder
           </h2>
+          {debugLogs.length > 0 && (
+            <div style={{ fontSize: '0.7rem', color: 'var(--text-secondary)', fontFamily: 'monospace' }}>
+              {debugLogs[0]}
+            </div>
+          )}
         </div>
+
+        {/* Diagnostic Logs - Only show on failure or for dev */}
+        {appStatus === 'error' && (
+          <div style={{ background: '#1a1a1a', padding: '10px', borderRadius: '8px', border: '1px solid #333', marginBottom: '10px' }}>
+            <div style={{ fontSize: '0.7rem', color: '#666', marginBottom: '5px', textTransform: 'uppercase' }}>Kernel Diagnostics</div>
+            {debugLogs.map((log, i) => (
+              <div key={i} style={{ fontSize: '0.75rem', color: i === 0 ? '#00ff88' : '#aaa', fontFamily: 'monospace' }}>{log}</div>
+            ))}
+          </div>
+        )}
 
         {/* How-to hint */}
         <div className="hint-strip">
