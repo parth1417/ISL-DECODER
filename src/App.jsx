@@ -61,7 +61,13 @@ function App() {
       setAppStatus('camera');
       setErrorMessage('');
       try {
-        const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user', width: 640, height: 480 } });
+        const stream = await navigator.mediaDevices.getUserMedia({ 
+            video: { 
+                facingMode: 'user', 
+                width: { ideal: 640 }, 
+                height: { ideal: 480 } 
+            } 
+        });
         videoRef.current.srcObject = stream;
         setIsCameraActive(true); // Show camera feed immediately
         videoRef.current.onloadedmetadata = async () => {
@@ -89,8 +95,8 @@ function App() {
       );
       handLandmarkerRef.current = await HandLandmarker.createFromOptions(vision, {
         baseOptions: {
-          modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task',
-          delegate: 'GPU',
+          modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/lite/1/hand_landmarker.task',
+          // removed delegate: 'GPU' to allow automatic selection
         },
         runningMode: 'VIDEO',
         numHands: 2,
