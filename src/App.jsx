@@ -104,25 +104,24 @@ function App() {
   const loadAIModules = async () => {
     if (handLandmarkerRef.current) return;
     try {
-      addLog("Booting AI Engine (v1.6)...");
+      addLog("Booting AI Engine (v1.7)...");
       setAppStatus('mediapipe');
       await tf.ready();
       
       addLog("Loading Hand Tracking Engine...");
-      // Using 0.10.14 as it is highly stable via CDN
       const vision = await FilesetResolver.forVisionTasks(
         'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm'
       );
       
       addLog("Fetching Model from Google Cloud...");
-      // Using verified float16 path to avoid 404 errors
       handLandmarkerRef.current = await HandLandmarker.createFromOptions(vision, {
         baseOptions: {
           modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task',
         },
         runningMode: 'VIDEO',
         numHands: 2,
-        minHandDetectionConfidence: 0.3,
+        minHandDetectionConfidence: 0.1,
+        minHandPresenceConfidence: 0.1,
       });
       
       addLog("Syncing Custom Model...");
@@ -307,8 +306,10 @@ function App() {
           const confidenceScore = prediction[maxIdx];
           tensor.dispose();
 
-          if (confidenceScore > 0.6) {
-            const detected = labelsRef.current[maxIdx] || '?';
+          const detected = labelsRef.current[maxIdx] || '?';
+          if (Math.random() < 0.05) console.log(`Prediction: ${detected} (${Math.round(confidenceScore*100)}%)`);
+
+          if (confidenceScore > 0.4) {
             setCurrentLetter(detected);
             setConfidence(Math.round(confidenceScore * 100));
 
