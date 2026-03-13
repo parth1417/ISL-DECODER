@@ -107,8 +107,8 @@ function App() {
       await tf.ready();
       
       const CDN_URLS = [
-        'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.9/wasm',
-        'https://unpkg.com/@mediapipe/tasks-vision@0.10.9/wasm'
+        'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.32/wasm',
+        'https://unpkg.com/@mediapipe/tasks-vision@0.10.32/wasm'
       ];
       
       let vision = null;
@@ -150,9 +150,11 @@ function App() {
       setAppStatus('error');
       let msg = err.message;
       if (msg.includes('fetch') || msg.includes('Script error')) {
-        msg = "Network/AdBlocker blocked AI modules. Please disable Brave Shields or AdBlock.";
+        msg = "Network Error. Please disable AdBlock or VPN.";
       }
       setErrorMessage(`${err.name}: ${msg}`);
+      // Show an alert on failure to help diagnostic
+      alert(`DIAGNOSTIC: ${err.name} - ${msg}`);
     }
   };
 
@@ -482,18 +484,27 @@ function App() {
           ✋ Hold a sign steady for ~1 sec to add a letter &nbsp;·&nbsp; Use <strong>Space</strong> to separate words &nbsp;·&nbsp; <strong>Backspace</strong> to fix mistakes
         </div>
 
-        {/* Sentence display */}
-        <div className="sentence-display" style={{ minHeight: '80px', flex: 'none' }}>
+        <div className="sentence-display" style={{ minHeight: '120px', flex: 'none', background: 'rgba(0,0,0,0.4)', borderRadius: '12px', padding: '15px' }}>
           {appStatus === 'error' ? (
-            <div style={{ color: 'var(--danger)', padding: '10px', fontSize: '0.9rem', width: '100%' }}>
-              <strong>SYSTEM ERROR:</strong> {errorMessage}
-              <br />
-              <button 
-                onClick={() => { setAppStatus('idle'); toggleCamera(); }}
-                style={{ marginTop: '10px', background: 'var(--bg-secondary)', padding: '5px 12px', borderRadius: '4px', border: '1px solid var(--danger)' }}
-              >
-                🔄 Retry Connection
-              </button>
+            <div style={{ color: '#ff4a4a', textAlign: 'center' }}>
+              <div style={{ fontWeight: 'bold', marginBottom: '8px' }}>⚠️ SYSTEM FAILURE</div>
+              <div style={{ fontSize: '0.8rem', marginBottom: '12px', background: 'rgba(255,0,0,0.1)', padding: '5px', borderRadius: '4px' }}>
+                {errorMessage}
+              </div>
+              <div style={{ display: 'flex', gap: '10px', justifyContent: 'center' }}>
+                <button 
+                  onClick={() => window.location.reload()}
+                  style={{ background: '#333', padding: '8px 15px', borderRadius: '6px', fontSize: '0.8rem' }}
+                >
+                  Reload Page
+                </button>
+                <button 
+                  onClick={() => { setAppStatus('idle'); toggleCamera(); }}
+                  style={{ background: '#ff4a4a', color: 'white', padding: '8px 15px', borderRadius: '6px', fontSize: '0.8rem' }}
+                >
+                  Try Again
+                </button>
+              </div>
             </div>
           ) : builtSentence ? (
             <>
