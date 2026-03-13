@@ -153,16 +153,18 @@ function App() {
   const loadCustomModel = async () => {
     try {
       addLog("Loading Model Assets...");
-      const resLabels = await fetch('/models/isl_model/labels.json');
+      const t = Date.now();
+      const resLabels = await fetch(`/models/isl_model/labels.json?v=${t}`);
       if (!resLabels.ok) throw new Error(`Labels Fetch 404`);
       labelsRef.current = await resLabels.json();
 
-      const resWeights = await fetch('/models/isl_model/weights.json');
+      const resWeights = await fetch(`/models/isl_model/weights.json?v=${t}`);
       if (!resWeights.ok) throw new Error(`Weights Fetch 404`);
       const weightsData = await resWeights.json();
 
       const numLabels = labelsRef.current.length;
-      addLog(`Syncing ${numLabels} classes...`);
+      if (numLabels === 0) throw new Error("Labels array is empty.");
+      addLog(`Syncing ${numLabels} classes from trained dataset...`);
       
       const model = tf.sequential();
       model.add(tf.layers.dense({ units: 128, activation: 'relu', inputShape: [126] }));
@@ -476,7 +478,7 @@ function App() {
           </h2>
           {debugLogs.length > 0 && (
             <div style={{ fontSize: '0.6rem', color: 'var(--accent-primary)', opacity: 0.8 }}>
-              v1.6 - {debugLogs[0]}
+              v1.7 - {debugLogs[0]}
             </div>
           )}
         </div>
