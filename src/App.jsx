@@ -88,53 +88,57 @@ function App() {
   const loadAIModules = async () => {
     if (handLandmarkerRef.current) return;
     try {
-      console.log("AI Init: Starting TF.js...");
+      console.log("AI Init Start");
       setAppStatus('mediapipe');
       await tf.ready();
       
-      console.log("AI Init: Loading MediaPipe Tasks...");
-      const vision = await FilesetResolver.forVisionTasks(
-        'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm'
-      );
+      const CDN_URLS = [
+        'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.9/wasm',
+        'https://unpkg.com/@mediapipe/tasks-vision@0.10.9/wasm'
+      ];
       
-      console.log("AI Init: Creating HandLandmarker (attempting GPU)...");
-      try {
-        handLandmarkerRef.current = await HandLandmarker.createFromOptions(vision, {
-          baseOptions: {
-            modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task',
-            delegate: 'GPU',
-          },
-          runningMode: 'VIDEO',
-          numHands: 2,
-          minHandDetectionConfidence: 0.2,
-          minHandPresenceConfidence: 0.2,
-        });
-        console.log("HandLandmarker created with GPU.");
-      } catch (gpuErr) {
-        console.warn("GPU init failed, falling back to CPU:", gpuErr);
-        handLandmarkerRef.current = await HandLandmarker.createFromOptions(vision, {
-          baseOptions: {
-            modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task',
-            delegate: 'CPU',
-          },
-          runningMode: 'VIDEO',
-          numHands: 2,
-          minHandDetectionConfidence: 0.2,
-          minHandPresenceConfidence: 0.2,
-        });
-        console.log("HandLandmarker created with CPU.");
+      let vision = null;
+      let lastErr = null;
+      
+      for (const url of CDN_URLS) {
+        try {
+          console.log(`AI Init: Trying CDN ${url}`);
+          vision = await FilesetResolver.forVisionTasks(url);
+          if (vision) break;
+        } catch (e) {
+          console.warn(`CDN ${url} failed:`, e);
+          lastErr = e;
+        }
       }
       
-      console.log("AI Init: Initializing Classifiers...");
+      if (!vision) throw lastErr || new Error("All CDNs failed to load MediaPipe tasks.");
+      
+      console.log("AI Init: Creating HandLandmarker...");
+      handLandmarkerRef.current = await HandLandmarker.createFromOptions(vision, {
+        baseOptions: {
+          modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/lite/1/hand_landmarker.task',
+        },
+        runningMode: 'VIDEO',
+        numHands: 2,
+        minHandDetectionConfidence: 0.3,
+        minHandPresenceConfidence: 0.3,
+      });
+      
+      console.log("AI Init: Loading Custom Neural Network...");
       setAppStatus('neural_network');
       await loadCustomModel();
       
       setAppStatus('ready');
-      console.log("AI Init: COMPLETE.");
+      setErrorMessage('');
+      console.log("AI Init: SUCCESS");
     } catch (err) {
       console.error("AI Init: CRITICAL FAILURE", err);
       setAppStatus('error');
-      setErrorMessage(`${err.name}: ${err.message}. Please use Chrome.`);
+      let msg = err.message;
+      if (msg.includes('fetch') || msg.includes('Script error')) {
+        msg = "Network/AdBlocker blocked AI modules. Please disable Brave Shields or AdBlock.";
+      }
+      setErrorMessage(`${err.name}: ${msg}`);
     }
   };
 
@@ -465,9 +469,18 @@ function App() {
         </div>
 
         {/* Sentence display */}
-        <div className="sentence-display">
+        <div className="sentence-display" style={{ minHeight: '80px', flex: 'none' }}>
           {appStatus === 'error' ? (
-            <span className="error-glow">{errorMessage}</span>
+            <div style={{ color: 'var(--danger)', padding: '10px', fontSize: '0.9rem', width: '100%' }}>
+              <strong>SYSTEM ERROR:</strong> {errorMessage}
+              <br />
+              <button 
+                onClick={() => { setAppStatus('idle'); toggleCamera(); }}
+                style={{ marginTop: '10px', background: 'var(--bg-secondary)', padding: '5px 12px', borderRadius: '4px', border: '1px solid var(--danger)' }}
+              >
+                🔄 Retry Connection
+              </button>
+            </div>
           ) : builtSentence ? (
             <>
               <span className="sentence-text">{builtSentence}</span>
