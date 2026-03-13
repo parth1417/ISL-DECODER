@@ -70,13 +70,9 @@ function App() {
       setAppStatus('camera');
       setErrorMessage('');
       try {
-        console.log("Requesting camera access...");
+        addLog("Requesting standard camera...");
         const stream = await navigator.mediaDevices.getUserMedia({ 
-            video: { 
-                facingMode: 'user', 
-                width: { ideal: 640 }, 
-                height: { ideal: 480 } 
-            } 
+            video: true
         });
         
         if (videoRef.current) {
@@ -108,21 +104,20 @@ function App() {
   const loadAIModules = async () => {
     if (handLandmarkerRef.current) return;
     try {
-      addLog("Booting AI...");
+      addLog("Booting AI Engine (v1.5)...");
       setAppStatus('mediapipe');
       await tf.ready();
       
-      addLog("Loading MediaPipe (0.10.7)...");
-      // Use the specific 0.10.7 version which is highly stable on mobile
+      addLog("Loading MediaPipe Runtime...");
+      // Using 0.10.14 as it is highly stable via CDN
       const vision = await FilesetResolver.forVisionTasks(
-        'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.7/wasm'
+        'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm'
       );
       
-      addLog("Configuring Tracker...");
+      addLog("Configuring Hand Tracker...");
       handLandmarkerRef.current = await HandLandmarker.createFromOptions(vision, {
         baseOptions: {
           modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/lite/1/hand_landmarker.task',
-          delegate: 'GPU'
         },
         runningMode: 'VIDEO',
         numHands: 2,
@@ -135,13 +130,15 @@ function App() {
       
       setAppStatus('ready');
       setErrorMessage('');
-      addLog("AI ONLINE.");
+      addLog("SYSTEM ONLINE.");
     } catch (err) {
       const detail = `${err.name}: ${err.message}`;
       console.error(err);
       addLog(`FATAL: ${detail}`);
       setAppStatus('error');
       setErrorMessage(detail);
+      // Popup alert for immediate mobile debugging
+      alert(`DIAGNOSTIC v1.5: ${detail}`);
     }
   };
 
@@ -468,8 +465,8 @@ function App() {
             Sentence Builder
           </h2>
           {debugLogs.length > 0 && (
-            <div style={{ fontSize: '0.7rem', color: 'var(--text-secondary)', fontFamily: 'monospace' }}>
-              {debugLogs[0]}
+            <div style={{ fontSize: '0.6rem', color: 'var(--accent-primary)', opacity: 0.8 }}>
+              v1.5 - {debugLogs[0]}
             </div>
           )}
         </div>
