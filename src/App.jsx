@@ -86,95 +86,109 @@ function App() {
   };
 
   const loadAIModules = async () => {
-    if (handLandmarkerRef.current) {
-        console.log("MediaPipe already initialized.");
-        return;
-    }
+    if (handLandmarkerRef.current) return;
     try {
-      console.log("Step 1: Initializing TF.js...");
+      console.log("AI Init: Starting TF.js...");
       setAppStatus('mediapipe');
       await tf.ready();
       
-      console.log("Step 2: Loading MediaPipe Fileset...");
+      console.log("AI Init: Loading MediaPipe Tasks...");
       const vision = await FilesetResolver.forVisionTasks(
-        'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.32/wasm'
+        'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm'
       );
       
-      console.log("Step 3: Creating HandLandmarker...");
-      handLandmarkerRef.current = await HandLandmarker.createFromOptions(vision, {
-        baseOptions: {
-          modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/lite/1/hand_landmarker.task',
-        },
-        runningMode: 'VIDEO',
-        numHands: 2,
-        minHandDetectionConfidence: 0.3,
-        minHandPresenceConfidence: 0.3,
-        minTrackingConfidence: 0.3,
-      });
+      console.log("AI Init: Creating HandLandmarker (attempting GPU)...");
+      try {
+        handLandmarkerRef.current = await HandLandmarker.createFromOptions(vision, {
+          baseOptions: {
+            modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task',
+            delegate: 'GPU',
+          },
+          runningMode: 'VIDEO',
+          numHands: 2,
+          minHandDetectionConfidence: 0.2,
+          minHandPresenceConfidence: 0.2,
+        });
+        console.log("HandLandmarker created with GPU.");
+      } catch (gpuErr) {
+        console.warn("GPU init failed, falling back to CPU:", gpuErr);
+        handLandmarkerRef.current = await HandLandmarker.createFromOptions(vision, {
+          baseOptions: {
+            modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task',
+            delegate: 'CPU',
+          },
+          runningMode: 'VIDEO',
+          numHands: 2,
+          minHandDetectionConfidence: 0.2,
+          minHandPresenceConfidence: 0.2,
+        });
+        console.log("HandLandmarker created with CPU.");
+      }
       
-      console.log("Step 4: Loading Custom Neural Network...");
+      console.log("AI Init: Initializing Classifiers...");
       setAppStatus('neural_network');
       await loadCustomModel();
       
-      console.log("Step 5: System Ready!");
       setAppStatus('ready');
+      console.log("AI Init: COMPLETE.");
     } catch (err) {
-      console.error("CRITICAL INIT FAILURE:", err);
+      console.error("AI Init: CRITICAL FAILURE", err);
       setAppStatus('error');
-      setErrorMessage('System init failed: ' + err.message + '. Try Chrome or Safari.');
+      setErrorMessage(`${err.name}: ${err.message}. Please use Chrome.`);
     }
   };
 
   const loadCustomModel = async () => {
     try {
-      console.log("Fetching labels from /models/isl_model/labels.json");
+      console.log("Model: Fetching definitions...");
       const resLabels = await fetch('/models/isl_model/labels.json');
-      if (!resLabels.ok) throw new Error(`Labels fetch failed: ${resLabels.status}`);
+      if (!resLabels.ok) throw new Error(`Labels 404`);
       labelsRef.current = await resLabels.json();
 
-      console.log("Fetching weights from /models/isl_model/weights.json");
       const resWeights = await fetch('/models/isl_model/weights.json');
-      if (!resWeights.ok) throw new Error(`Weights fetch failed: ${resWeights.status}`);
+      if (!resWeights.ok) throw new Error(`Weights 404`);
       const weightsData = await resWeights.json();
 
-      const NUM_CLASSES = labelsRef.current.length;
-      console.log(`Building model for ${NUM_CLASSES} classes...`);
-      const NUM_COORD_POINTS = 126;
+      if (!Array.isArray(labelsRef.current) || labelsRef.current.length === 0) {
+        throw new Error("Invalid labels array");
+      }
 
+      const NUM_CLASSES = labelsRef.current.length;
+      console.log(`Model: Building for ${NUM_CLASSES} signs...`);
+      
       const model = tf.sequential();
-      model.add(tf.layers.dense({ units: 128, activation: 'relu', inputShape: [NUM_COORD_POINTS] }));
+      model.add(tf.layers.dense({ units: 128, activation: 'relu', inputShape: [126] }));
       model.add(tf.layers.dropout({ rate: 0.2 }));
       model.add(tf.layers.dense({ units: 64, activation: 'relu' }));
       model.add(tf.layers.dense({ units: NUM_CLASSES, activation: 'softmax' }));
 
+      // Map weights manually
       let weightIdx = 0;
-      model.layers.forEach((layer, idx) => {
+      for (let layer of model.layers) {
         if (layer.getWeights().length > 0) {
           const lw = weightsData[weightIdx];
-          if (!lw) return;
+          if (!lw) continue;
+          
           const expectedShape = layer.getWeights()[0].shape;
-          const actualShape = [lw.weights.length, lw.weights[0].length];
-          if (expectedShape[0] !== actualShape[0] || expectedShape[1] !== actualShape[1]) {
-            throw new Error(`Layer ${idx} shape mismatch. Expected ${expectedShape}, got ${actualShape}.`);
-          }
           layer.setWeights([
             tf.tensor(lw.weights, expectedShape),
             tf.tensor(lw.biases, [lw.biases.length]),
           ]);
           weightIdx++;
         }
-      });
+      }
 
       customAiModelRef.current = model;
       setModelLoaded(true);
-      console.log("Custom model loaded successfully.");
+      console.log("Model: SUCCESS.");
     } catch (e) {
-      console.warn("Custom model load failed, using simulation mode:", e);
+      console.error("Model Error:", e.message);
+      // Failsafe: Basic Prediction Mock to allow UI interaction
       customAiModelRef.current = {
-        predict: (t) => ({ data: async () => new Float32Array(labelsRef.current.length || 34).fill(0.01) }),
+        predict: (t) => ({ data: async () => new Float32Array(labelsRef.current?.length || 34).fill(0.0) }),
       };
       setModelLoaded(true);
-      setErrorMessage('Using Simulation: ' + e.message);
+      setErrorMessage(`Model failed (${e.message}). Recognition disabled.`);
     }
   };
 
