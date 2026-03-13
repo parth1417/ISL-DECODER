@@ -11,7 +11,19 @@ RAW_VIDEOS_PATH = r'C:\Users\admin\Downloads\Indian'
 
 def extract_keypoints(hand_landmarks):
     if hand_landmarks:
-        return np.array([[res.x, res.y, res.z] for res in hand_landmarks.landmark]).flatten()
+        # Normalize by wrist coordinates to achieve translation invariance
+        wrist_x = hand_landmarks.landmark[0].x
+        wrist_y = hand_landmarks.landmark[0].y
+        wrist_z = hand_landmarks.landmark[0].z
+        
+        coords = np.array([[res.x - wrist_x, res.y - wrist_y, res.z - wrist_z] for res in hand_landmarks.landmark])
+        
+        # Normalize scale (make max absolute value 1.0)
+        max_val = np.max(np.abs(coords))
+        if max_val > 0:
+            coords = coords / max_val
+            
+        return coords.flatten()
     return np.zeros(21*3)
 
 def process_images(max_images_per_class=100):
