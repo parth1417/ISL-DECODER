@@ -63,9 +63,14 @@ function App() {
       try {
         const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user', width: 640, height: 480 } });
         videoRef.current.srcObject = stream;
+        setIsCameraActive(true); // Show camera feed immediately
         videoRef.current.onloadedmetadata = async () => {
-          setIsCameraActive(true);
-          await loadAIModules();
+          try {
+            await videoRef.current.play();
+            await loadAIModules();
+          } catch (playErr) {
+            console.error("Video play failed:", playErr);
+          }
         };
       } catch (err) {
         setAppStatus('error');
@@ -75,11 +80,12 @@ function App() {
   };
 
   const loadAIModules = async () => {
+    if (handLandmarkerRef.current) return; // Prevent double init
     try {
       setAppStatus('mediapipe');
       await tf.ready();
       const vision = await FilesetResolver.forVisionTasks(
-        'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm'
+        'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.32/wasm'
       );
       handLandmarkerRef.current = await HandLandmarker.createFromOptions(vision, {
         baseOptions: {
@@ -88,6 +94,9 @@ function App() {
         },
         runningMode: 'VIDEO',
         numHands: 2,
+        minHandDetectionConfidence: 0.3,
+        minHandPresenceConfidence: 0.3,
+        minTrackingConfidence: 0.3,
       });
       setAppStatus('neural_network');
       await loadCustomModel();
@@ -151,21 +160,41 @@ function App() {
   // ─── Landmark Drawing ──────────────────────────────────────────────────────
   const drawLandmarks = (ctx, landmarks) => {
     ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
-    ctx.fillStyle = '#00ff88';
-    ctx.strokeStyle = '#00b8ff';
-    ctx.lineWidth = 2;
+    
+    // MediaPipe Hand Connections (Standard Skeleton)
+    const connections = [
+      [0, 1], [1, 2], [2, 3], [3, 4], // Thumb
+      [0, 5], [5, 6], [6, 7], [7, 8], // Index
+      [5, 9], [9, 10], [10, 11], [11, 12], // Middle
+      [9, 13], [13, 14], [14, 15], [15, 16], // Ring
+      [13, 17], [0, 17], [17, 18], [18, 19], [19, 20] // Pinky
+    ];
+
     for (const hand of landmarks) {
+      // Draw Connections (Lines)
+      ctx.strokeStyle = '#00b8ff';
+      ctx.lineWidth = 3;
+      ctx.lineCap = 'round';
+      
+      for (const [start, end] of connections) {
+        if (hand[start] && hand[end]) {
+          ctx.beginPath();
+          ctx.moveTo(hand[start].x * ctx.canvas.width, hand[start].y * ctx.canvas.height);
+          ctx.lineTo(hand[end].x * ctx.canvas.width, hand[end].y * ctx.canvas.height);
+          ctx.stroke();
+        }
+      }
+
+      // Draw Landmarks (Points)
+      ctx.fillStyle = '#00ff88';
       for (const point of hand) {
         ctx.beginPath();
-        ctx.arc(point.x * ctx.canvas.width, point.y * ctx.canvas.height, 4, 0, 2 * Math.PI);
+        ctx.arc(point.x * ctx.canvas.width, point.y * ctx.canvas.height, 5, 0, 2 * Math.PI);
         ctx.fill();
+        ctx.strokeStyle = '#fff';
+        ctx.lineWidth = 1;
+        ctx.stroke();
       }
-      ctx.beginPath();
-      ctx.moveTo(hand[0].x * ctx.canvas.width, hand[0].y * ctx.canvas.height);
-      for (let i = 1; i < hand.length; i++) {
-        ctx.lineTo(hand[i].x * ctx.canvas.width, hand[i].y * ctx.canvas.height);
-      }
-      ctx.stroke();
     }
   };
 
@@ -174,17 +203,25 @@ function App() {
     if (!videoRef.current || !canvasRef.current || !handLandmarkerRef.current || !customAiModelRef.current) return;
 
     const video = videoRef.current;
+    if (video.readyState < 2) return; // Wait for HAVE_CURRENT_DATA
+
     if (video.currentTime !== lastVideoTimeRef.current) {
       lastVideoTimeRef.current = video.currentTime;
 
+      // Use a timestamp that matches the video metadata if possible
       const results = handLandmarkerRef.current.detectForVideo(video, performance.now());
       const ctx = canvasRef.current.getContext('2d');
-      canvasRef.current.width = video.videoWidth;
-      canvasRef.current.height = video.videoHeight;
+      
+      // Only set dimensions once or when they change to avoid unnecessary clears
+      if (canvasRef.current.width !== video.videoWidth || canvasRef.current.height !== video.videoHeight) {
+        canvasRef.current.width = video.videoWidth || 640;
+        canvasRef.current.height = video.videoHeight || 480;
+      }
 
       if (results.landmarks && results.landmarks.length > 0) {
         drawLandmarks(ctx, results.landmarks);
         setIsHandVisible(true);
+        if (Math.random() < 0.05) console.log("Hand Landmarks detected:", results.landmarks.length);
 
         try {
           let lh = new Array(21 * 3).fill(0);
