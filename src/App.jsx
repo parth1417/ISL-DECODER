@@ -108,39 +108,17 @@ function App() {
   const loadAIModules = async () => {
     if (handLandmarkerRef.current) return;
     try {
-      addLog("Starting AI Engine...");
+      addLog("Booting AI...");
       setAppStatus('mediapipe');
-      
-      addLog("Initializing TF.js Core...");
       await tf.ready();
-      addLog(`TF.js Backend: ${tf.getBackend()}`);
       
-      const CDN_URLS = [
-        'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.32/wasm',
-        'https://unpkg.com/@mediapipe/tasks-vision@0.10.32/wasm',
-        '/wasm' // Local fallback if user hosted it
-      ];
+      addLog("Loading MediaPipe (0.10.7)...");
+      // Use the specific 0.10.7 version which is highly stable on mobile
+      const vision = await FilesetResolver.forVisionTasks(
+        'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.7/wasm'
+      );
       
-      let vision = null;
-      let lastErr = null;
-      
-      for (const url of CDN_URLS) {
-        try {
-          addLog(`Fetching MediaPipe Runtime from ${url}...`);
-          vision = await FilesetResolver.forVisionTasks(url);
-          if (vision) {
-            addLog("MediaPipe Fileset loaded successfully.");
-            break;
-          }
-        } catch (e) {
-          addLog(`CDN Error: ${e.message}`);
-          lastErr = e;
-        }
-      }
-      
-      if (!vision) throw lastErr || new Error("Failed to resolve MediaPipe fileset.");
-      
-      addLog("Initializing Hand Tracker (Lite)...");
+      addLog("Configuring Tracker...");
       handLandmarkerRef.current = await HandLandmarker.createFromOptions(vision, {
         baseOptions: {
           modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/lite/1/hand_landmarker.task',
@@ -150,20 +128,20 @@ function App() {
         numHands: 2,
         minHandDetectionConfidence: 0.3,
       });
-      addLog("Hand Tracker Ready.");
       
-      addLog("Loading ISL Classifier...");
+      addLog("Syncing Custom Model...");
       setAppStatus('neural_network');
       await loadCustomModel();
       
       setAppStatus('ready');
       setErrorMessage('');
-      addLog("SYSTEM ONLINE.");
+      addLog("AI ONLINE.");
     } catch (err) {
-      const errorDetail = `${err.name}: ${err.message}`;
-      addLog(`CRITICAL FAILURE: ${errorDetail}`);
+      const detail = `${err.name}: ${err.message}`;
+      console.error(err);
+      addLog(`FATAL: ${detail}`);
       setAppStatus('error');
-      setErrorMessage(errorDetail);
+      setErrorMessage(detail);
     }
   };
 
@@ -431,6 +409,9 @@ function App() {
             <button className={`icon-btn ${isVoiceEnabled ? 'active' : ''}`} onClick={() => setIsVoiceEnabled(!isVoiceEnabled)}>
               {isVoiceEnabled ? <Volume2 size={20} /> : <VolumeX size={20} />}
             </button>
+            <button className="icon-btn" onClick={loadAIModules} title="Debug Init">
+              <Sparkles size={20} />
+            </button>
             <button className={`icon-btn ${isCameraActive ? 'danger-hover' : 'accent-hover'}`} onClick={toggleCamera}>
               {isCameraActive ? <CameraOff size={20} /> : <Camera size={20} />}
             </button>
@@ -467,6 +448,14 @@ function App() {
           <div style={{ height: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', color: 'var(--text-secondary)' }}>
             <CameraOff size={48} style={{ marginBottom: '16px', opacity: 0.5 }} />
             <p style={{ fontFamily: 'Outfit, sans-serif' }}>Tap camera icon to begin AI tracking</p>
+            {appStatus === 'error' && (
+               <button 
+                 onClick={() => { setAppStatus('idle'); setIsCameraActive(true); toggleCamera(); }}
+                 style={{ marginTop: '20px', background: 'var(--danger)', color: 'white', padding: '10px 20px', borderRadius: '8px' }}
+               >
+                 Fix & Restart AI
+               </button>
+            )}
           </div>
         )}
       </div>
