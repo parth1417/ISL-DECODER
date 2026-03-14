@@ -4,6 +4,7 @@ import './App.css';
 
 import { HandLandmarker, FilesetResolver } from '@mediapipe/tasks-vision';
 import * as tf from '@tensorflow/tfjs';
+import * as knnClassifier from '@tensorflow-models/knn-classifier';
 
 // How many consecutive frames the SAME letter must be detected before it "locks in"
 const STABILITY_THRESHOLD = 30; // ~1 second at 30fps
@@ -22,6 +23,12 @@ function App() {
   const [isHandVisible, setIsHandVisible] = useState(false);
   const [debugLogs, setDebugLogs] = useState([]);
 
+  // Self-Training States
+  const [isTrainingMode, setIsTrainingMode] = useState(false);
+  const [trainingLabel, setTrainingLabel] = useState('');
+  const [isRecordingCustom, setIsRecordingCustom] = useState(false);
+  const [customSigns, setCustomSigns] = useState({}); // { label: example_count }
+
   const addLog = (msg) => {
     console.log(`[AI-LOG] ${msg}`);
     setDebugLogs(prev => [`${new Date().toLocaleTimeString([], { hour12: false })}: ${msg}`, ...prev].slice(0, 8));
@@ -31,6 +38,7 @@ function App() {
   const canvasRef = useRef(null);
   const handLandmarkerRef = useRef(null);
   const customAiModelRef = useRef(null);
+  const knnRef = useRef(null);
   const labelsRef = useRef([]);
   const requestRef = useRef(null);
   const lastVideoTimeRef = useRef(-1);
@@ -104,9 +112,13 @@ function App() {
   const loadAIModules = async () => {
     if (handLandmarkerRef.current) return;
     try {
-      addLog("Booting AI Engine (v1.7)...");
+      addLog("Booting AI Engine (v1.8)...");
       setAppStatus('mediapipe');
       await tf.ready();
+
+      if (!knnRef.current) {
+        knnRef.current = knnClassifier.create();
+      }
 
       addLog("Loading Hand Tracking Engine...");
       const vision = await FilesetResolver.forVisionTasks(
@@ -191,7 +203,7 @@ function App() {
     } catch (e) {
       addLog(`Classifier Error: ${e.message}`);
       customAiModelRef.current = {
-        predict: (t) => ({ data: async () => new Float32Array(labelsRef.current?.length || 30).fill(0.0) }),
+        predict: (t) => ({ data: async () => new Float32Array(labelsRef.current?.length || 34).fill(0.0) }),
       };
       setModelLoaded(true);
       setErrorMessage(`Model: ${e.message}`);
@@ -285,15 +297,48 @@ function App() {
           }
 
           const tensor = tf.tensor2d([lh.concat(rh)]);
-          const prediction = await customAiModelRef.current.predict(tensor).data();
-          const maxIdx = prediction.indexOf(Math.max(...prediction));
-          const confidenceScore = prediction[maxIdx];
+
+          // --- Custom Training Injection ---
+          if (isRecordingCustom && trainingLabel.trim() !== '') {
+            knnRef.current.addExample(tensor, trainingLabel.trim().toUpperCase());
+            setCustomSigns(prev => ({
+              ...prev,
+              [trainingLabel.trim().toUpperCase()]: (prev[trainingLabel.trim().toUpperCase()] || 0) + 1
+            }));
+            tensor.dispose();
+            requestRef.current = requestAnimationFrame(loop);
+            return; // Skip normal prediction while teaching
+          }
+          // ----------------------------------
+
+          let detected = '?';
+          let confidenceScore = 0;
+
+          // Check custom KNN first
+          if (knnRef.current && knnRef.current.getNumClasses() > 0) {
+            const res = await knnRef.current.predictClass(tensor);
+            if (res.confidences[res.label] > 0.8) {
+              detected = res.label;
+              confidenceScore = res.confidences[res.label];
+            }
+          }
+
+          // Fallback to core DL model if KNN has low confidence
+          if ((detected === '?' || confidenceScore < 0.8) && customAiModelRef.current) {
+             const prediction = await customAiModelRef.current.predict(tensor).data();
+             const maxIdx = prediction.indexOf(Math.max(...prediction));
+             const dlConfidence = prediction[maxIdx];
+
+             if (dlConfidence > 0.4) {
+                detected = labelsRef.current[maxIdx] || '?';
+                confidenceScore = dlConfidence;
+             }
+          }
           tensor.dispose();
 
-          const detected = labelsRef.current[maxIdx] || '?';
           if (Math.random() < 0.05) console.log(`Prediction: ${detected} (${Math.round(confidenceScore * 100)}%)`);
 
-          if (confidenceScore > 0.4) {
+          if (confidenceScore > 0.4 && detected !== '?') {
             setCurrentLetter(detected);
             setConfidence(Math.round(confidenceScore * 100));
 
@@ -458,12 +503,61 @@ function App() {
             <Sparkles size={18} className="gradient-text" />
             Sentence Builder
           </h2>
-          {debugLogs.length > 0 && (
-            <div style={{ fontSize: '0.6rem', color: 'var(--accent-primary)', opacity: 0.8 }}>
-              v1.7 - {debugLogs[0]}
-            </div>
-          )}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+            <button 
+              className={`action-btn ${isTrainingMode ? 'active' : ''}`}
+              style={{ background: isTrainingMode ? 'var(--accent-primary)' : 'rgba(255,255,255,0.1)', color: isTrainingMode ? '#000' : 'white', fontSize: '0.75rem', padding: '4px 10px', height: 'auto' }}
+              onClick={() => setIsTrainingMode(!isTrainingMode)}
+            >
+              {isTrainingMode ? 'Close Teach Mode' : 'Teach Mode'}
+            </button>
+            {debugLogs.length > 0 && (
+              <div style={{ fontSize: '0.6rem', color: 'var(--accent-primary)', opacity: 0.8 }}>
+                v1.8
+              </div>
+            )}
+          </div>
         </div>
+
+        {/* --- TEACHING MODE PANEL --- */}
+        {isTrainingMode && (
+          <div style={{ background: 'rgba(0, 184, 255, 0.1)', border: '1px solid rgba(0, 184, 255, 0.3)', borderRadius: '10px', padding: '15px', marginBottom: '15px' }}>
+             <div style={{ fontSize: '0.9rem', marginBottom: '10px', color: 'var(--accent-secondary)' }}>
+                <strong>Teach AI a Custom Sign:</strong> Instantly learn new gestures using your local browser memory!
+             </div>
+             <div style={{ display: 'flex', gap: '8px', marginBottom: '10px' }}>
+                 <input 
+                    type="text" 
+                    placeholder="Enter sign name (e.g. HELLO)" 
+                    value={trainingLabel}
+                    onChange={(e) => setTrainingLabel(e.target.value)}
+                    style={{ flex: 1, padding: '8px', borderRadius: '6px', background: 'rgba(0,0,0,0.3)', border: '1px solid rgba(255,255,255,0.2)', color: 'white' }} 
+                 />
+                 <button 
+                    onMouseDown={() => setIsRecordingCustom(true)}
+                    onMouseUp={() => setIsRecordingCustom(false)}
+                    onTouchStart={() => setIsRecordingCustom(true)}
+                    onTouchEnd={() => setIsRecordingCustom(false)}
+                    style={{ background: isRecordingCustom ? 'var(--accent-primary)' : 'rgba(255,255,255,0.2)', color: isRecordingCustom ? '#000' : '#fff', padding: '8px 15px', borderRadius: '6px', fontWeight: 'bold', border: 'none', cursor: 'pointer', transition: 'all 0.1s' }}
+                 >
+                    {isRecordingCustom ? 'Recording...' : 'Hold & Sign'}
+                 </button>
+             </div>
+             
+             {Object.keys(customSigns).length > 0 && (
+               <div style={{ fontSize: '0.8rem', display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                 Learned: 
+                 {Object.entries(customSigns).map(([label, count]) => (
+                    <span key={label} style={{ background: 'rgba(0,0,0,0.5)', padding: '2px 8px', borderRadius: '12px', border: '1px solid rgba(255,255,255,0.1)' }}>
+                      {label} ({count})
+                    </span>
+                 ))}
+                 <button onClick={() => { knnRef.current.clearAllClasses(); setCustomSigns({}); }} style={{ fontSize: '0.7rem', color: '#ff4a4a', background: 'none', border: 'none', cursor: 'pointer', textDecoration: 'underline' }}>Clear All</button>
+               </div>
+             )}
+          </div>
+        )}
+        {/* ---------------------------- */}
 
         {/* Diagnostic Logs - Only show on failure or for dev */}
         {appStatus === 'error' && (
