@@ -71,24 +71,24 @@ function App() {
       setErrorMessage('');
       try {
         addLog("Requesting standard camera...");
-        const stream = await navigator.mediaDevices.getUserMedia({ 
-            video: true
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: true
         });
-        
+
         if (videoRef.current) {
           videoRef.current.onloadedmetadata = async () => {
-             console.log("Video metadata loaded");
-             try {
-               await videoRef.current.play();
-               console.log("Video playing");
-               await loadAIModules();
-             } catch (playErr) {
-               console.error("Play error:", playErr);
-               // Even if play fails (e.g. autonomy block), try to continue
-               await loadAIModules();
-             }
+            console.log("Video metadata loaded");
+            try {
+              await videoRef.current.play();
+              console.log("Video playing");
+              await loadAIModules();
+            } catch (playErr) {
+              console.error("Play error:", playErr);
+              // Even if play fails (e.g. autonomy block), try to continue
+              await loadAIModules();
+            }
           };
-          
+
           videoRef.current.srcObject = stream;
           setIsCameraActive(true);
         }
@@ -107,12 +107,12 @@ function App() {
       addLog("Booting AI Engine (v1.7)...");
       setAppStatus('mediapipe');
       await tf.ready();
-      
+
       addLog("Loading Hand Tracking Engine...");
       const vision = await FilesetResolver.forVisionTasks(
         'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm'
       );
-      
+
       addLog("Fetching Model from Google Cloud...");
       handLandmarkerRef.current = await HandLandmarker.createFromOptions(vision, {
         baseOptions: {
@@ -123,11 +123,11 @@ function App() {
         minHandDetectionConfidence: 0.1,
         minHandPresenceConfidence: 0.1,
       });
-      
+
       addLog("Syncing Custom Model...");
       setAppStatus('neural_network');
       await loadCustomModel();
-      
+
       setAppStatus('ready');
       setErrorMessage('');
       addLog("AI ONLINE.");
@@ -137,15 +137,15 @@ function App() {
       addLog(`FATAL: ${detail}`);
       setAppStatus('error');
       setErrorMessage(detail);
-      
+
       // Critical: Clear camera if engine fails so user can retry cleanly
       if (videoRef.current) {
-         const tracks = videoRef.current.srcObject?.getTracks();
-         tracks?.forEach(t => t.stop());
-         videoRef.current.srcObject = null;
+        const tracks = videoRef.current.srcObject?.getTracks();
+        tracks?.forEach(t => t.stop());
+        videoRef.current.srcObject = null;
       }
       setIsCameraActive(false);
-      
+
       alert(`DIAGNOSTIC v1.6: ${detail}`);
     }
   };
@@ -165,7 +165,7 @@ function App() {
       const numLabels = labelsRef.current.length;
       if (numLabels === 0) throw new Error("Labels array is empty.");
       addLog(`Syncing ${numLabels} classes from trained dataset...`);
-      
+
       const model = tf.sequential();
       model.add(tf.layers.dense({ units: 128, activation: 'relu', inputShape: [126] }));
       model.add(tf.layers.dropout({ rate: 0.2 }));
@@ -191,7 +191,7 @@ function App() {
     } catch (e) {
       addLog(`Classifier Error: ${e.message}`);
       customAiModelRef.current = {
-        predict: (t) => ({ data: async () => new Float32Array(labelsRef.current?.length || 34).fill(0.0) }),
+        predict: (t) => ({ data: async () => new Float32Array(labelsRef.current?.length || 30).fill(0.0) }),
       };
       setModelLoaded(true);
       setErrorMessage(`Model: ${e.message}`);
@@ -205,7 +205,7 @@ function App() {
   // ─── Landmark Drawing ──────────────────────────────────────────────────────
   const drawLandmarks = (ctx, landmarks) => {
     ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
-    
+
     // MediaPipe Hand Connections (Standard Skeleton)
     const connections = [
       [0, 1], [1, 2], [2, 3], [3, 4], // Thumb
@@ -220,7 +220,7 @@ function App() {
       ctx.strokeStyle = '#00b8ff';
       ctx.lineWidth = 3;
       ctx.lineCap = 'round';
-      
+
       for (const [start, end] of connections) {
         if (hand[start] && hand[end]) {
           ctx.beginPath();
@@ -256,7 +256,7 @@ function App() {
       // Use a timestamp that matches the video metadata if possible
       const results = handLandmarkerRef.current.detectForVideo(video, performance.now());
       const ctx = canvasRef.current.getContext('2d');
-      
+
       // Only set dimensions once or when they change to avoid unnecessary clears
       if (canvasRef.current.width !== video.videoWidth || canvasRef.current.height !== video.videoHeight) {
         canvasRef.current.width = video.videoWidth || 640;
@@ -273,33 +273,15 @@ function App() {
           let rh = new Array(21 * 3).fill(0);
           const handednessList = results.handednesses || results.handedness;
 
-          const normalizePts = (pts) => {
-            const wrist = pts[0];
-            const translated = pts.map(pt => ({
-                x: pt.x - wrist.x,
-                y: pt.y - wrist.y,
-                z: pt.z - wrist.z
-            }));
-            let maxVal = 0;
-            for (const pt of translated) {
-              maxVal = Math.max(maxVal, Math.abs(pt.x), Math.abs(pt.y), Math.abs(pt.z));
-            }
-            return translated.flatMap(pt => [
-                maxVal > 0 ? pt.x / maxVal : 0,
-                maxVal > 0 ? pt.y / maxVal : 0,
-                maxVal > 0 ? pt.z / maxVal : 0
-            ]);
-          };
-
           if (results.landmarks[0] && handednessList?.[0]) {
             const cat = handednessList[0][0].categoryName;
-            if (cat === 'Left') lh = normalizePts(results.landmarks[0]);
-            else rh = normalizePts(results.landmarks[0]);
+            if (cat === 'Left') lh = results.landmarks[0].flatMap(pt => [pt.x, pt.y, pt.z]);
+            else rh = results.landmarks[0].flatMap(pt => [pt.x, pt.y, pt.z]);
           }
           if (results.landmarks[1] && handednessList?.[1]) {
             const cat = handednessList[1][0].categoryName;
-            if (cat === 'Left') lh = normalizePts(results.landmarks[1]);
-            else rh = normalizePts(results.landmarks[1]);
+            if (cat === 'Left') lh = results.landmarks[1].flatMap(pt => [pt.x, pt.y, pt.z]);
+            else rh = results.landmarks[1].flatMap(pt => [pt.x, pt.y, pt.z]);
           }
 
           const tensor = tf.tensor2d([lh.concat(rh)]);
@@ -309,7 +291,7 @@ function App() {
           tensor.dispose();
 
           const detected = labelsRef.current[maxIdx] || '?';
-          if (Math.random() < 0.05) console.log(`Prediction: ${detected} (${Math.round(confidenceScore*100)}%)`);
+          if (Math.random() < 0.05) console.log(`Prediction: ${detected} (${Math.round(confidenceScore * 100)}%)`);
 
           if (confidenceScore > 0.4) {
             setCurrentLetter(detected);
@@ -458,12 +440,12 @@ function App() {
             <CameraOff size={48} style={{ marginBottom: '16px', opacity: 0.5 }} />
             <p style={{ fontFamily: 'Outfit, sans-serif' }}>Tap camera icon to begin AI tracking</p>
             {appStatus === 'error' && (
-               <button 
-                 onClick={() => { setAppStatus('idle'); setIsCameraActive(true); toggleCamera(); }}
-                 style={{ marginTop: '20px', background: 'var(--danger)', color: 'white', padding: '10px 20px', borderRadius: '8px' }}
-               >
-                 Fix & Restart AI
-               </button>
+              <button
+                onClick={() => { setAppStatus('idle'); setIsCameraActive(true); toggleCamera(); }}
+                style={{ marginTop: '20px', background: 'var(--danger)', color: 'white', padding: '10px 20px', borderRadius: '8px' }}
+              >
+                Fix & Restart AI
+              </button>
             )}
           </div>
         )}
@@ -506,13 +488,13 @@ function App() {
                 {errorMessage}
               </div>
               <div style={{ display: 'flex', gap: '10px', justifyContent: 'center' }}>
-                <button 
+                <button
                   onClick={() => window.location.reload()}
                   style={{ background: '#333', padding: '8px 15px', borderRadius: '6px', fontSize: '0.8rem' }}
                 >
                   Reload Page
                 </button>
-                <button 
+                <button
                   onClick={() => { setAppStatus('idle'); toggleCamera(); }}
                   style={{ background: '#ff4a4a', color: 'white', padding: '8px 15px', borderRadius: '6px', fontSize: '0.8rem' }}
                 >
