@@ -203,7 +203,7 @@ function App() {
     } catch (e) {
       addLog(`Classifier Error: ${e.message}`);
       customAiModelRef.current = {
-        predict: (t) => ({ data: async () => new Float32Array(labelsRef.current?.length || 34).fill(0.0) }),
+        predict: (t) => ({ data: async () => new Float32Array(labelsRef.current?.length || 41).fill(0.0) }),
       };
       setModelLoaded(true);
       setErrorMessage(`Model: ${e.message}`);
@@ -285,15 +285,33 @@ function App() {
           let rh = new Array(21 * 3).fill(0);
           const handednessList = results.handednesses || results.handedness;
 
+          const normalizePts = (pts) => {
+            const wrist = pts[0];
+            const translated = pts.map(pt => ({
+              x: pt.x - wrist.x,
+              y: pt.y - wrist.y,
+              z: pt.z - wrist.z
+            }));
+            let maxVal = 0;
+            for (const pt of translated) {
+              maxVal = Math.max(maxVal, Math.abs(pt.x), Math.abs(pt.y), Math.abs(pt.z));
+            }
+            return translated.flatMap(pt => [
+              maxVal > 0 ? pt.x / maxVal : 0,
+              maxVal > 0 ? pt.y / maxVal : 0,
+              maxVal > 0 ? pt.z / maxVal : 0
+            ]);
+          };
+
           if (results.landmarks[0] && handednessList?.[0]) {
             const cat = handednessList[0][0].categoryName;
-            if (cat === 'Left') lh = results.landmarks[0].flatMap(pt => [pt.x, pt.y, pt.z]);
-            else rh = results.landmarks[0].flatMap(pt => [pt.x, pt.y, pt.z]);
+            if (cat === 'Left') lh = normalizePts(results.landmarks[0]);
+            else rh = normalizePts(results.landmarks[0]);
           }
           if (results.landmarks[1] && handednessList?.[1]) {
             const cat = handednessList[1][0].categoryName;
-            if (cat === 'Left') lh = results.landmarks[1].flatMap(pt => [pt.x, pt.y, pt.z]);
-            else rh = results.landmarks[1].flatMap(pt => [pt.x, pt.y, pt.z]);
+            if (cat === 'Left') lh = normalizePts(results.landmarks[1]);
+            else rh = normalizePts(results.landmarks[1]);
           }
 
           const tensor = tf.tensor2d([lh.concat(rh)]);
