@@ -347,7 +347,17 @@ function App() {
              const maxIdx = prediction.indexOf(Math.max(...prediction));
              const dlConfidence = prediction[maxIdx];
 
+             // DEBUG: print to HUD
+             if (Math.random() < 0.1) {
+                const topP = labelsRef.current[maxIdx] || '?';
+                console.log(`[TFJS] Raw Top Prediction: ${topP} (${(dlConfidence*100).toFixed(1)}%)`);
+                // addLog(`DL sees: ${topP} at ${(dlConfidence*100).toFixed(1)}%`);
+             }
+
              if (dlConfidence > 0.4) {
+                detected = labelsRef.current[maxIdx] || '?';
+                confidenceScore = dlConfidence;
+             }
                 detected = labelsRef.current[maxIdx] || '?';
                 confidenceScore = dlConfidence;
              }
