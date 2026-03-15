@@ -22,12 +22,16 @@ function App() {
   const [errorMessage, setErrorMessage] = useState('');
   const [isHandVisible, setIsHandVisible] = useState(false);
   const [debugLogs, setDebugLogs] = useState([]);
+  const [successFlash, setSuccessFlash] = useState(false); // Trigger visual feedback
+
 
   // Self-Training States
   const [isTrainingMode, setIsTrainingMode] = useState(false);
   const [trainingLabel, setTrainingLabel] = useState('');
   const [isRecordingCustom, setIsRecordingCustom] = useState(false);
   const [customSigns, setCustomSigns] = useState({}); // { label: example_count }
+  const [copied, setCopied] = useState(false);
+
 
   const addLog = (msg) => {
     console.log(`[AI-LOG] ${msg}`);
@@ -189,15 +193,44 @@ function App() {
         if (layer.getWeights().length > 0) {
           const lw = weightsData[weightIdx];
           if (!lw) continue;
-          layer.setWeights([
-            tf.tensor(lw.weights, layer.getWeights()[0].shape),
-            tf.tensor(lw.biases, [lw.biases.length]),
-          ]);
+          try {
+            layer.setWeights([
+              tf.tensor(lw.weights, layer.getWeights()[0].shape),
+              tf.tensor(lw.biases, [lw.biases.length]),
+            ]);
+          } catch (syncErr) {
+             addLog(`Layer ${weightIdx} mismatch: ${syncErr.message}`);
+             throw syncErr;
+          }
           weightIdx++;
         }
       }
 
+
       customAiModelRef.current = model;
+
+      // Try loading persistence KNN
+      try {
+        const savedKnn = localStorage.getItem('isl_knn_data');
+        if (savedKnn && knnRef.current) {
+          const dataset = JSON.parse(savedKnn);
+          const tensorDataset = {};
+          Object.keys(dataset).forEach(key => {
+            tensorDataset[key] = tf.tensor2d(dataset[key].data, dataset[key].shape);
+          });
+          knnRef.current.setClassifierDataset(tensorDataset);
+          
+          const counts = {};
+          Object.keys(tensorDataset).forEach(label => {
+            counts[label] = tensorDataset[label].shape[0];
+          });
+          setCustomSigns(counts);
+          addLog("Restored custom signs from memory.");
+        }
+      } catch (knnErr) {
+        console.warn("Failed to load saved KNN:", knnErr);
+      }
+
       setModelLoaded(true);
       addLog("ISL Classifier: Ready.");
     } catch (e) {
@@ -210,15 +243,29 @@ function App() {
     }
   };
 
+  const saveKnnData = () => {
+    if (!knnRef.current) return;
+    const dataset = knnRef.current.getClassifierDataset();
+    const saveable = {};
+    Object.keys(dataset).forEach(key => {
+      saveable[key] = {
+        data: Array.from(dataset[key].dataSync()),
+        shape: dataset[key].shape
+      };
+    });
+    localStorage.setItem('isl_knn_data', JSON.stringify(saveable));
+    addLog("Custom signs saved.");
+  };
+
+
   useEffect(() => {
     tf.ready().then(() => console.log('TF.js ready.'));
   }, []);
 
   // ─── Landmark Drawing ──────────────────────────────────────────────────────
-  const drawLandmarks = (ctx, landmarks) => {
+  const drawLandmarks = (ctx, landmarks, handednessList) => {
     ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
 
-    // MediaPipe Hand Connections (Standard Skeleton)
     const connections = [
       [0, 1], [1, 2], [2, 3], [3, 4], // Thumb
       [0, 5], [5, 6], [6, 7], [7, 8], // Index
@@ -227,11 +274,45 @@ function App() {
       [13, 17], [0, 17], [17, 18], [18, 19], [19, 20] // Pinky
     ];
 
-    for (const hand of landmarks) {
-      // Draw Connections (Lines)
-      ctx.strokeStyle = '#00b8ff';
-      ctx.lineWidth = 3;
+    landmarks.forEach((hand, i) => {
+      const isLeft = handednessList?.[i]?.[0]?.categoryName === 'Left';
+      const colorPrimary = isLeft ? 'hsl(0, 100%, 65%)' : 'hsl(190, 100%, 50%)';
+      const colorSecondary = isLeft ? 'hsl(0, 100%, 80%)' : 'hsl(190, 100%, 75%)';
+
+      // --- Calculate Bounding Box ---
+      let xMin = Infinity, xMax = -Infinity, yMin = Infinity, yMax = -Infinity;
+      hand.forEach(pt => {
+        xMin = Math.min(xMin, pt.x);
+        xMax = Math.max(xMax, pt.x);
+        yMin = Math.min(yMin, pt.y);
+        yMax = Math.max(yMax, pt.y);
+      });
+
+      // Scale to canvas
+      const pad = 20;
+      const bx = xMin * ctx.canvas.width - pad;
+      const by = yMin * ctx.canvas.height - pad;
+      const bw = (xMax - xMin) * ctx.canvas.width + pad * 2;
+      const bh = (yMax - yMin) * ctx.canvas.height + pad * 2;
+
+      // Draw Box
+      ctx.strokeStyle = colorPrimary;
+      ctx.setLineDash([5, 5]);
+      ctx.lineWidth = 2;
+      ctx.strokeRect(bx, by, bw, bh);
+      ctx.setLineDash([]);
+      
+      // Label
+      ctx.fillStyle = colorPrimary;
+      ctx.font = '12px Outfit';
+      ctx.fillText(isLeft ? 'LEFT HAND' : 'RIGHT HAND', bx, by - 5);
+
+      // Draw Connections
+      ctx.strokeStyle = colorPrimary;
+      ctx.lineWidth = 4;
       ctx.lineCap = 'round';
+      ctx.shadowBlur = 10;
+      ctx.shadowColor = colorPrimary;
 
       for (const [start, end] of connections) {
         if (hand[start] && hand[end]) {
@@ -241,44 +322,53 @@ function App() {
           ctx.stroke();
         }
       }
+      ctx.shadowBlur = 0;
 
-      // Draw Landmarks (Points)
-      ctx.fillStyle = '#00ff88';
+      // Draw Landmarks
       for (const point of hand) {
+        ctx.fillStyle = colorSecondary;
         ctx.beginPath();
-        ctx.arc(point.x * ctx.canvas.width, point.y * ctx.canvas.height, 5, 0, 2 * Math.PI);
+        ctx.arc(point.x * ctx.canvas.width, point.y * ctx.canvas.height, 6, 0, 2 * Math.PI);
         ctx.fill();
         ctx.strokeStyle = '#fff';
-        ctx.lineWidth = 1;
+        ctx.lineWidth = 1.5;
         ctx.stroke();
       }
-    }
+    });
   };
+
+
 
   // ─── Prediction Loop ───────────────────────────────────────────────────────
   const predictLoop = useCallback(async function loop() {
-    if (!videoRef.current || !canvasRef.current || !handLandmarkerRef.current || !customAiModelRef.current) return;
+    if (!isCameraActive) return;
+    if (!videoRef.current || !canvasRef.current || !handLandmarkerRef.current || !customAiModelRef.current) {
+       requestRef.current = requestAnimationFrame(loop);
+       return;
+    }
 
     const video = videoRef.current;
-    if (video.readyState < 2) return; // Wait for HAVE_CURRENT_DATA
+    if (video.readyState < 2) {
+       requestRef.current = requestAnimationFrame(loop);
+       return;
+    }
 
     if (video.currentTime !== lastVideoTimeRef.current) {
       lastVideoTimeRef.current = video.currentTime;
 
-      // Use a timestamp that matches the video metadata if possible
-      const results = handLandmarkerRef.current.detectForVideo(video, performance.now());
+      // Use video.currentTime for MediaPipe when in VIDEO mode
+      const timestamp = performance.now();
+      const results = handLandmarkerRef.current.detectForVideo(video, timestamp);
       const ctx = canvasRef.current.getContext('2d');
 
-      // Only set dimensions once or when they change to avoid unnecessary clears
       if (canvasRef.current.width !== video.videoWidth || canvasRef.current.height !== video.videoHeight) {
         canvasRef.current.width = video.videoWidth || 640;
         canvasRef.current.height = video.videoHeight || 480;
       }
 
       if (results.landmarks && results.landmarks.length > 0) {
-        drawLandmarks(ctx, results.landmarks);
+        drawLandmarks(ctx, results.landmarks, results.handednesses || results.handedness);
         setIsHandVisible(true);
-        if (Math.random() < 0.05) console.log("Hand Landmarks detected:", results.landmarks.length);
 
         try {
           let lh = new Array(21 * 3).fill(0);
@@ -286,6 +376,7 @@ function App() {
           const handednessList = results.handednesses || results.handedness;
 
           const normalizePts = (pts) => {
+            if (!pts || pts.length === 0) return new Array(63).fill(0);
             const wrist = pts[0];
             const translated = pts.map(pt => ({
               x: pt.x - wrist.x,
@@ -316,7 +407,6 @@ function App() {
 
           const tensor = tf.tensor2d([lh.concat(rh)]);
 
-          // --- Custom Training Injection ---
           if (isRecordingCustom && trainingLabel.trim() !== '') {
             knnRef.current.addExample(tensor, trainingLabel.trim().toUpperCase());
             setCustomSigns(prev => ({
@@ -325,14 +415,12 @@ function App() {
             }));
             tensor.dispose();
             requestRef.current = requestAnimationFrame(loop);
-            return; // Skip normal prediction while teaching
+            return;
           }
-          // ----------------------------------
 
           let detected = '?';
           let confidenceScore = 0;
 
-          // Check custom KNN first
           if (knnRef.current && knnRef.current.getNumClasses() > 0) {
             const res = await knnRef.current.predictClass(tensor);
             if (res.confidences[res.label] > 0.8) {
@@ -341,46 +429,41 @@ function App() {
             }
           }
 
-          // Fallback to core DL model if KNN has low confidence
           if ((detected === '?' || confidenceScore < 0.8) && customAiModelRef.current) {
-             const prediction = await customAiModelRef.current.predict(tensor).data();
+             const predictionTensor = customAiModelRef.current.predict(tensor);
+             const prediction = await predictionTensor.data();
+             predictionTensor.dispose(); // Cleanup
+
              const maxIdx = prediction.indexOf(Math.max(...prediction));
              const dlConfidence = prediction[maxIdx];
-
-             // DEBUG: print to HUD
-             if (Math.random() < 0.1) {
-                const topP = labelsRef.current[maxIdx] || '?';
-                console.log(`[TFJS] Raw Top Prediction: ${topP} (${(dlConfidence*100).toFixed(1)}%)`);
-                // addLog(`DL sees: ${topP} at ${(dlConfidence*100).toFixed(1)}%`);
-             }
 
              if (dlConfidence > 0.4) {
                 detected = labelsRef.current[maxIdx] || '?';
                 confidenceScore = dlConfidence;
              }
-                detected = labelsRef.current[maxIdx] || '?';
-                confidenceScore = dlConfidence;
+             
+             if (Math.random() < 0.02) {
+                console.log(`[Diagnostic] DL Top: ${labelsRef.current[maxIdx]} @ ${(dlConfidence*100).toFixed(1)}%`);
              }
           }
           tensor.dispose();
-
-          if (Math.random() < 0.05) console.log(`Prediction: ${detected} (${Math.round(confidenceScore * 100)}%)`);
 
           if (confidenceScore > 0.4 && detected !== '?') {
             setCurrentLetter(detected);
             setConfidence(Math.round(confidenceScore * 100));
 
-            // Stability check — same letter for STABILITY_THRESHOLD frames → lock it in
             if (detected === lastDetectedLetterRef.current) {
               stabilityCountRef.current += 1;
               const progress = Math.min(100, Math.round((stabilityCountRef.current / STABILITY_THRESHOLD) * 100));
               setStabilityProgress(progress);
 
               if (stabilityCountRef.current === STABILITY_THRESHOLD) {
-                // Lock this letter into the sentence
                 setBuiltSentence(prev => prev + detected);
                 builtSentenceRef.current = builtSentenceRef.current + detected;
-                stabilityCountRef.current = 0; // reset so next hold adds another
+                stabilityCountRef.current = 0;
+                setSuccessFlash(true);
+                setTimeout(() => setSuccessFlash(false), 500);
+                if (window.navigator?.vibrate) window.navigator.vibrate(50);
               }
             } else {
               lastDetectedLetterRef.current = detected;
@@ -394,7 +477,7 @@ function App() {
             stabilityCountRef.current = 0;
           }
         } catch (err) {
-          console.error('Prediction error:', err);
+          console.error('Inference Error:', err);
         }
       } else {
         ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
@@ -403,13 +486,13 @@ function App() {
         setConfidence(0);
         setStabilityProgress(0);
         stabilityCountRef.current = 0;
+        lastDetectedLetterRef.current = '';
       }
     }
 
-    if (isCameraActive) {
-      requestRef.current = requestAnimationFrame(loop);
-    }
-  }, [isCameraActive]);
+    requestRef.current = requestAnimationFrame(loop);
+  }, [isCameraActive, isRecordingCustom, trainingLabel]);
+
 
   useEffect(() => {
     if (isCameraActive) {
@@ -438,7 +521,15 @@ function App() {
     builtSentenceRef.current = '';
   };
 
+  const copyToClipboard = () => {
+    if (!builtSentence.trim()) return;
+    navigator.clipboard.writeText(builtSentence.trim());
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
   const speakSentence = () => speak(builtSentence);
+
 
   // ─── UI ────────────────────────────────────────────────────────────────────
   return (
@@ -484,6 +575,10 @@ function App() {
 
         <video ref={videoRef} autoPlay playsInline muted className="camera-feed" style={{ display: isCameraActive ? 'block' : 'none' }} />
         <canvas ref={canvasRef} className="tracking-canvas" style={{ display: isCameraActive ? 'block' : 'none' }} />
+        
+        {/* Success Flash Overlay */}
+        <div className={`success-flash ${successFlash ? 'active' : ''}`} />
+
 
         {/* Live Letter HUD — shown while camera is active */}
         {isCameraActive && (
@@ -580,7 +675,9 @@ function App() {
                       {label} ({count})
                     </span>
                  ))}
-                 <button onClick={() => { knnRef.current.clearAllClasses(); setCustomSigns({}); }} style={{ fontSize: '0.7rem', color: '#ff4a4a', background: 'none', border: 'none', cursor: 'pointer', textDecoration: 'underline' }}>Clear All</button>
+                 <button onClick={saveKnnData} style={{ fontSize: '0.7rem', color: 'var(--accent-primary)', background: 'none', border: 'none', cursor: 'pointer', textDecoration: 'underline' }}>Save Progress</button>
+                 <button onClick={() => { knnRef.current.clearAllClasses(); setCustomSigns({}); localStorage.removeItem('isl_knn_data'); }} style={{ fontSize: '0.7rem', color: '#ff4a4a', background: 'none', border: 'none', cursor: 'pointer', textDecoration: 'underline' }}>Clear All</button>
+
                </div>
              )}
           </div>
@@ -650,6 +747,10 @@ function App() {
           <button className="action-btn clear-btn" onClick={clearSentence} title="Clear the sentence">
             ✕ Clear
           </button>
+          <button className={`action-btn copy-btn ${copied ? 'active' : ''}`} onClick={copyToClipboard} title="Copy to clipboard">
+             {copied ? '✓ Copied' : '📄 Copy'}
+          </button>
+
         </div>
 
         {/* Error hint */}

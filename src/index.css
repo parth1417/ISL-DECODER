@@ -1,16 +1,21 @@
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@400;500;600;700&display=swap');
 
 :root {
-  --bg-primary: #0a0a0c;
-  --bg-secondary: #16161a;
-  --bg-glass: rgba(22, 22, 26, 0.7);
-  --text-primary: #ffffff;
-  --text-secondary: #a0a0a5;
-  --accent-primary: #00ff88;
-  --accent-secondary: #00b8ff;
-  --accent-gradient: linear-gradient(135deg, #00ff88 0%, #00b8ff 100%);
-  --danger: #ff4a4a;
-  --warning: #ffb800;
+  --bg-primary: hsl(240, 10%, 4%);
+  --bg-secondary: hsl(240, 10%, 8%);
+  --bg-glass: hsla(240, 10%, 8%, 0.7);
+  --text-primary: hsl(0, 0%, 100%);
+  --text-secondary: hsl(240, 5%, 70%);
+  
+  --accent-primary: hsl(150, 100%, 50%);
+  --accent-secondary: hsl(200, 100%, 50%);
+  --accent-tertiary: hsl(280, 100%, 65%);
+  --accent-gradient: linear-gradient(135deg, var(--accent-primary) 0%, var(--accent-secondary) 100%);
+  --magic-gradient: linear-gradient(90deg, var(--accent-primary), var(--accent-secondary), var(--accent-tertiary), var(--accent-primary));
+  
+  --danger: hsl(0, 100%, 65%);
+  --warning: hsl(45, 100%, 50%);
+  --success: hsl(150, 100%, 45%);
   
   --spacing-1: 0.25rem;
   --spacing-2: 0.5rem;
@@ -18,13 +23,20 @@
   --spacing-4: 1rem;
   --spacing-6: 1.5rem;
   --spacing-8: 2rem;
+  --spacing-12: 3rem;
   
   --radius-sm: 8px;
   --radius-md: 16px;
   --radius-lg: 24px;
+  --radius-xl: 32px;
   --radius-full: 9999px;
   
-  --transition-fast: 0.15s ease-in-out;
+  --shadow-sm: 0 2px 4px rgba(0,0,0,0.1);
+  --shadow-md: 0 8px 16px rgba(0,0,0,0.2);
+  --shadow-lg: 0 16px 32px rgba(0,0,0,0.4);
+  --shadow-glow: 0 0 20px hsla(150, 100%, 50%, 0.3);
+  
+  --transition-fast: 0.15s cubic-bezier(0.4, 0, 0.2, 1);
   --transition-normal: 0.3s cubic-bezier(0.4, 0, 0.2, 1);
   --transition-slow: 0.5s cubic-bezier(0.4, 0, 0.2, 1);
 }
@@ -33,8 +45,11 @@
   box-sizing: border-box;
   margin: 0;
   padding: 0;
-  WebkitTapHighlightColor: transparent;
+  -webkit-tap-highlight-color: transparent;
+  cursor: default;
 }
+
+
 
 body {
   font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
@@ -72,7 +87,13 @@ button:focus-visible {
   width: 100vw;
   position: relative;
   background-color: var(--bg-primary);
+  background-image: 
+    radial-gradient(at 0% 0%, hsla(150, 100%, 50%, 0.05) 0px, transparent 50%),
+    radial-gradient(at 100% 0%, hsla(200, 100%, 50%, 0.05) 0px, transparent 50%),
+    radial-gradient(at 100% 100%, hsla(280, 100%, 65%, 0.05) 0px, transparent 50%),
+    radial-gradient(at 0% 100%, hsla(150, 100%, 50%, 0.05) 0px, transparent 50%);
 }
+
 
 /* Animations */
 @keyframes pulse {
